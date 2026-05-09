@@ -1,0 +1,8 @@
+if(DEFINED src AND DEFINED dst AND EXISTS "${src}")
+    get_filename_component(dst_dir "${dst}" DIRECTORY)
+    file(MAKE_DIRECTORY "${dst_dir}")
+    if(EXISTS "${dst}")
+        file(REMOVE "${dst}")
+    endif()
+    file(RENAME "${src}" "${dst}")
+endif()

@@ -1,0 +1,17 @@
+# Build artifacts
+/build*/
+
+# Generated simulation results
+/result/
+/output/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Local editor and OS noise
+.vs/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,88 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "VS2022 Build",
+      "type": "shell",
+      "command": "${workspaceFolder}/scripts/build_vs2022.bat",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "CMake Configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S",
+        ".",
+        "-B",
+        "build",
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake Build",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build",
+        "--config",
+        "RelWithDebInfo"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "dependsOn": "CMake Configure",
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Run D2Q9 Example",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$exe = 'build/RelWithDebInfo/bin/lbm_periodic.exe'; if (-not (Test-Path $exe)) { throw 'lbm_periodic executable was not found. Run the VS2022 Build task first.' }; & $exe"
+      ],
+      "dependsOn": "VS2022 Build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Lid Driven Cavity",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$exe = 'build/RelWithDebInfo/bin/lbm_cavity.exe'; if (-not (Test-Path $exe)) { throw 'lbm_cavity executable was not found. Run the VS2022 Build task first.' }; & $exe"
+      ],
+      "dependsOn": "VS2022 Build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Capillary Displacement",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$exe = 'build/RelWithDebInfo/bin/lbm_capillary.exe'; if (-not (Test-Path $exe)) { throw 'lbm_capillary executable was not found. Run the VS2022 Build task first.' }; & $exe"
+      ],
+      "dependsOn": "VS2022 Build",
+      "problemMatcher": []
+    }
+  ]
+}

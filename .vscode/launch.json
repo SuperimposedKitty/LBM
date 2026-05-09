@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "D2Q9 Periodic Shear",
+      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_periodic.exe",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "VS2022 Build"
+    },
+    {
+      "name": "Lid Driven Cavity",
+      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_cavity.exe",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "VS2022 Build"
+    },
+    {
+      "name": "Capillary Displacement",
+      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_capillary.exe",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "VS2022 Build"
+    }
+  ]
+}
