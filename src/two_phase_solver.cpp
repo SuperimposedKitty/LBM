@@ -41,6 +41,7 @@ TwoPhaseSolver::TwoPhaseSolver(int nx, int ny, TwoPhaseConfig config)
       force_ay_(rho_a_.size(), 0.0),
       force_bx_(rho_a_.size(), 0.0),
       force_by_(rho_a_.size(), 0.0),
+      porosity_(rho_a_.size(), config.free_flow_porosity),
       solid_(rho_a_.size(), 0) {
     if (nx <= 4 || ny <= 4) {
         throw std::invalid_argument("Two-phase grid dimensions must be greater than 4.");
@@ -53,6 +54,21 @@ TwoPhaseSolver::TwoPhaseSolver(int nx, int ny, TwoPhaseConfig config)
     }
     if (config_.wall_adhesion_strength < 0.0) {
         throw std::invalid_argument("wall_adhesion_strength must be non-negative.");
+    }
+    if (config_.free_flow_porosity <= 0.0 || config_.free_flow_porosity > 1.0 ||
+        config_.porous_porosity <= 0.0 || config_.porous_porosity > 1.0) {
+        throw std::invalid_argument("porosity values must be in the range (0, 1].");
+    }
+    if (config_.porous_pore_diameter <= 0.0) {
+        throw std::invalid_argument("porous_pore_diameter must be positive.");
+    }
+    if (config_.darcy_drag_scale < 0.0 || config_.forchheimer_drag_scale < 0.0) {
+        throw std::invalid_argument("porous drag scales must be non-negative.");
+    }
+    if (config_.porous_start_x < 0 || config_.porous_end_x <= config_.porous_start_x ||
+        config_.porous_end_x > nx_) {
+        config_.porous_start_x = nx_ / 3;
+        config_.porous_end_x = 2 * nx_ / 3;
     }
 }
 
@@ -73,6 +89,13 @@ double TwoPhaseSolver::phase_at(int x, int y) const {
     return (rho_a_[s] - rho_b_[s]) / std::max(rho_[s], min_density);
 }
 
+double TwoPhaseSolver::porosity_at(int x, int y) const {
+    if (is_outside(x, y)) {
+        throw std::out_of_range("porosity_at coordinates are outside the grid.");
+    }
+    return porosity_[scalar_index(x, y)];
+}
+
 bool TwoPhaseSolver::solid_at(int x, int y) const {
     if (is_outside(x, y)) {
         throw std::out_of_range("solid_at coordinates are outside the grid.");
@@ -86,6 +109,9 @@ void TwoPhaseSolver::initialize_capillary_displacement() {
             const int s = scalar_index(x, y);
             // 细管上下边界视为固体壁面，内部初始全部填充蓝色被驱替相。
             solid_[s] = y == 0 || y == ny_ - 1 ? 1 : 0;
+            // 中间多孔介质不作为固体堵塞，而是用孔隙度和阻力项表示亚网格孔道。
+            porosity_[s] = solid_[s] ? 0.0 :
+                (is_porous_column(x) ? config_.porous_porosity : config_.free_flow_porosity);
 
             const double rho_a = config_.rho_low;
             const double rho_b = solid_[s] ? config_.rho_low : config_.rho_high;
@@ -120,6 +146,8 @@ TwoPhaseDiagnostics TwoPhaseSolver::diagnostics() const {
     TwoPhaseDiagnostics d{};
     double weighted_interface = 0.0;
     double injected_mass = 0.0;
+    double porous_pore_speed_sum = 0.0;
+    int porous_samples = 0;
 
     for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
@@ -131,6 +159,12 @@ TwoPhaseDiagnostics TwoPhaseSolver::diagnostics() const {
             d.mass_b += rho_b_[s];
             const double speed = std::sqrt(ux_[s] * ux_[s] + uy_[s] * uy_[s]);
             d.max_speed = std::max(d.max_speed, speed);
+            if (porosity_[s] > 0.0 && porosity_[s] < config_.free_flow_porosity) {
+                const double pore_speed = speed / porosity_[s];
+                porous_pore_speed_sum += pore_speed;
+                d.porous_max_pore_speed = std::max(d.porous_max_pore_speed, pore_speed);
+                ++porous_samples;
+            }
 
             const double injected_saturation = std::clamp(
                 (rho_a_[s] - config_.rho_low) /
@@ -143,6 +177,8 @@ TwoPhaseDiagnostics TwoPhaseSolver::diagnostics() const {
     }
 
     d.interface_x = injected_mass > 0.0 ? weighted_interface / injected_mass : 0.0;
+    d.porous_mean_pore_speed =
+        porous_samples > 0 ? porous_pore_speed_sum / static_cast<double>(porous_samples) : 0.0;
     return d;
 }
 
@@ -152,14 +188,15 @@ void TwoPhaseSolver::write_csv(const std::string& path) const {
         throw std::runtime_error("Failed to open output file: " + path);
     }
 
-    out << "x,y,rho_a,rho_b,rho,phi,ux,uy,solid\n";
+    out << "x,y,rho_a,rho_b,rho,phi,ux,uy,porosity,solid\n";
     out << std::setprecision(17);
     for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
             const double phi = (rho_a_[s] - rho_b_[s]) / std::max(rho_[s], min_density);
             out << x << ',' << y << ',' << rho_a_[s] << ',' << rho_b_[s] << ',' << rho_[s] << ','
-                << phi << ',' << ux_[s] << ',' << uy_[s] << ',' << static_cast<int>(solid_[s]) << '\n';
+                << phi << ',' << ux_[s] << ',' << uy_[s] << ',' << porosity_[s] << ','
+                << static_cast<int>(solid_[s]) << '\n';
         }
     }
 }
@@ -202,6 +239,12 @@ void TwoPhaseSolver::write_vtk(const std::string& path) const {
     out << "LOOKUP_TABLE default\n";
     for (std::uint8_t value : solid_) {
         out << static_cast<int>(value) << '\n';
+    }
+
+    out << "SCALARS porosity double 1\n";
+    out << "LOOKUP_TABLE default\n";
+    for (double value : porosity_) {
+        out << value << '\n';
     }
 
     out << "VECTORS velocity double\n";
@@ -358,6 +401,28 @@ void TwoPhaseSolver::compute_forces() {
             const double total_rho = std::max(rho_[s], min_density);
             force_ax_[s] += config_.body_force_x * rho_a_[s] / total_rho;
             force_bx_[s] += config_.body_force_x * rho_b_[s] / total_rho;
+
+            if (porosity_[s] > 0.0 && porosity_[s] < config_.free_flow_porosity) {
+                const double permeability = permeability_from_porosity(porosity_[s]);
+                const double viscosity =
+                    D2Q9::cs2 * (0.5 * (config_.tau_a + config_.tau_b) - 0.5);
+                const double pore_ux = ux_[s] / porosity_[s];
+                const double pore_uy = uy_[s] / porosity_[s];
+                const double pore_speed = std::sqrt(pore_ux * pore_ux + pore_uy * pore_uy);
+                const double darcy_coeff =
+                    config_.darcy_drag_scale * viscosity / std::max(permeability, min_density);
+                const double forchheimer_coeff =
+                    config_.forchheimer_drag_scale / std::sqrt(std::max(permeability, min_density));
+                const double drag_x =
+                    -rho_[s] * (darcy_coeff + forchheimer_coeff * pore_speed) * pore_ux;
+                const double drag_y =
+                    -rho_[s] * (darcy_coeff + forchheimer_coeff * pore_speed) * pore_uy;
+                // 多孔介质项是 REV 尺度的 Darcy/Forchheimer 阻力，再按组分占比分配给 A/B。
+                force_ax_[s] += drag_x * rho_a_[s] / total_rho;
+                force_ay_[s] += drag_y * rho_a_[s] / total_rho;
+                force_bx_[s] += drag_x * rho_b_[s] / total_rho;
+                force_by_[s] += drag_y * rho_b_[s] / total_rho;
+            }
         }
     }
 }
@@ -453,6 +518,19 @@ void TwoPhaseSolver::set_equilibrium_cell(
         fa_[dist_index(x, y, q)] = equilibrium(q, rho_a_[s], ux_[s], uy_[s]);
         fb_[dist_index(x, y, q)] = equilibrium(q, rho_b_[s], ux_[s], uy_[s]);
     }
+}
+
+bool TwoPhaseSolver::is_porous_column(int x) const {
+    return x >= config_.porous_start_x && x < config_.porous_end_x;
+}
+
+double TwoPhaseSolver::permeability_from_porosity(double porosity) const {
+    const double eps = std::clamp(porosity, 0.05, 1.0);
+    const double solid_fraction = std::max(1.0 - eps, 1.0e-6);
+    const double pore_diameter = std::max(config_.porous_pore_diameter, 1.0);
+    // Kozeny-Carman 型等效渗透率，把孔隙尺度参数映射到格点尺度阻力。
+    return pore_diameter * pore_diameter * eps * eps * eps /
+           (180.0 * solid_fraction * solid_fraction);
 }
 
 bool TwoPhaseSolver::is_outside(int x, int y) const {

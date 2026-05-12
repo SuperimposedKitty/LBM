@@ -105,7 +105,8 @@ inline void write_scalar_animation_svg(
     const std::vector<std::uint8_t>& solid,
     int nx,
     int ny,
-    const ScalarAnimationOptions& options) {
+    const ScalarAnimationOptions& options,
+    const std::vector<double>& porosity = {}) {
     if (nx <= 0 || ny <= 0) {
         throw std::invalid_argument("Animation grid dimensions must be positive.");
     }
@@ -115,6 +116,9 @@ inline void write_scalar_animation_svg(
     const std::size_t cell_count = static_cast<std::size_t>(nx) * ny;
     if (!solid.empty() && solid.size() != cell_count) {
         throw std::invalid_argument("Solid mask size does not match the animation grid.");
+    }
+    if (!porosity.empty() && porosity.size() != cell_count) {
+        throw std::invalid_argument("Porosity mask size does not match the animation grid.");
     }
     for (const auto& frame : frames) {
         if (frame.size() != cell_count) {
@@ -166,6 +170,15 @@ inline void write_scalar_animation_svg(
     out << "  <text x=\"" << margin << "\" y=\"" << margin
         << "\" font-family=\"Arial, sans-serif\" font-size=\"18\" font-weight=\"700\""
         << " fill=\"#1f2328\">" << options.title << "</text>\n";
+    if (!porosity.empty()) {
+        out << "  <defs>\n";
+        out << "    <pattern id=\"porousHatch\" width=\"6\" height=\"6\""
+            << " patternUnits=\"userSpaceOnUse\">\n";
+        out << "      <path d=\"M0 6 L6 0\" stroke=\"#1f2328\" stroke-opacity=\"0.42\""
+            << " stroke-width=\"1\"/>\n";
+        out << "    </pattern>\n";
+        out << "  </defs>\n";
+    }
 
     for (std::size_t frame_index = 0; frame_index < frames.size(); ++frame_index) {
         out << "  <g shape-rendering=\"crispEdges\" display=\""
@@ -181,6 +194,13 @@ inline void write_scalar_animation_svg(
                     (!solid.empty() && solid[s]) ? "#2f343b" : scalar_color(options.color_map, t);
                 out << "    <rect x=\"" << px << "\" y=\"" << py << "\" width=\"" << cell
                     << "\" height=\"" << cell << "\" fill=\"" << fill << "\"/>\n";
+                if (!porosity.empty() && porosity[s] > 0.0 && porosity[s] < 0.999 &&
+                    (solid.empty() || !solid[s])) {
+                    // 多孔介质叠加斜线纹理，底色仍保留两相相场。
+                    out << "    <rect x=\"" << px << "\" y=\"" << py << "\" width=\"" << cell
+                        << "\" height=\"" << cell
+                        << "\" fill=\"url(#porousHatch)\" fill-opacity=\"0.55\"/>\n";
+                }
             }
         }
         out << "    <animate attributeName=\"display\" values=\"";
