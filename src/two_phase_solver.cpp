@@ -69,6 +69,7 @@ double TwoPhaseSolver::phase_at(int x, int y) const {
         throw std::out_of_range("phase_at coordinates are outside the grid.");
     }
     const int s = scalar_index(x, y);
+    // phi 接近 1 表示红色注入相占优，接近 -1 表示蓝色被驱替相占优。
     return (rho_a_[s] - rho_b_[s]) / std::max(rho_[s], min_density);
 }
 
@@ -83,6 +84,7 @@ void TwoPhaseSolver::initialize_capillary_displacement() {
     for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
+            // 细管上下边界视为固体壁面，内部初始全部填充蓝色被驱替相。
             solid_[s] = y == 0 || y == ny_ - 1 ? 1 : 0;
 
             const double rho_a = config_.rho_low;
@@ -95,6 +97,7 @@ void TwoPhaseSolver::initialize_capillary_displacement() {
 }
 
 void TwoPhaseSolver::step() {
+    // 两相更新：求宏观量 -> 计算相互作用力 -> 带力碰撞 -> 迁移 -> 入口/出口边界。
     compute_macroscopic();
     compute_forces();
     collide();
@@ -216,10 +219,12 @@ int TwoPhaseSolver::dist_index(int x, int y, int direction) const {
 }
 
 double TwoPhaseSolver::psi(double rho) {
+    // Shan-Chen 伪势函数，低密度近似线性，高密度趋于饱和。
     return 1.0 - std::exp(-std::max(rho, 0.0));
 }
 
 double TwoPhaseSolver::equilibrium(int direction, double rho, double ux, double uy) {
+    // 两个组分共用混合速度，但各自用本组分密度构造平衡分布。
     const double cu = static_cast<double>(D2Q9::cx[direction]) * ux +
                       static_cast<double>(D2Q9::cy[direction]) * uy;
     const double u2 = ux * ux + uy * uy;
@@ -229,6 +234,7 @@ double TwoPhaseSolver::equilibrium(int direction, double rho, double ux, double 
 
 double TwoPhaseSolver::forcing_term(
     int direction, double ux, double uy, double fx, double fy, double omega) {
+    // Guo 力项把体力以二阶精度加入 BGK 碰撞过程。
     const double cx = static_cast<double>(D2Q9::cx[direction]);
     const double cy = static_cast<double>(D2Q9::cy[direction]);
     const double cu = cx * ux + cy * uy;
@@ -250,6 +256,7 @@ void TwoPhaseSolver::compute_macroscopic() {
                 continue;
             }
 
+            // 两个组分密度分别由各自分布函数求和；动量按混合物总动量求取。
             double rho_a = 0.0;
             double rho_b = 0.0;
             double momentum_x = 0.0;
@@ -272,6 +279,7 @@ void TwoPhaseSolver::compute_macroscopic() {
             rho_[s] = rho_a + rho_b;
             const double total_fx = force_ax_[s] + force_bx_[s];
             const double total_fy = force_ay_[s] + force_by_[s];
+            // 半步力修正使速度与带力 LBM 的时间中心一致。
             ux_[s] = (momentum_x + 0.5 * total_fx) / rho_[s];
             uy_[s] = (momentum_y + 0.5 * total_fy) / rho_[s];
         }
@@ -284,6 +292,7 @@ void TwoPhaseSolver::compute_forces() {
     std::fill(force_bx_.begin(), force_bx_.end(), 0.0);
     std::fill(force_by_.begin(), force_by_.end(), 0.0);
 
+    // contact_angle_degrees 通过 cos(theta) 转换为壁面对两相的相反偏好。
     const double contact_angle = config_.contact_angle_degrees * pi / 180.0;
     const double wetting_bias = config_.wall_adhesion_strength * std::cos(contact_angle);
 
@@ -294,6 +303,7 @@ void TwoPhaseSolver::compute_forces() {
                 continue;
             }
 
+            // 流体-流体伪势力：A 相受到邻近 B 相吸引，B 相受到邻近 A 相吸引。
             double sum_bx = 0.0;
             double sum_by = 0.0;
             double sum_ax = 0.0;
@@ -324,6 +334,7 @@ void TwoPhaseSolver::compute_forces() {
             force_bx_[s] = -config_.interaction_strength * psi_b * sum_ax;
             force_by_[s] = -config_.interaction_strength * psi_b * sum_ay;
 
+            // 流体-固体黏附力：只统计邻近固体格点，用于体现接触角作用。
             double wall_x = 0.0;
             double wall_y = 0.0;
             for (int q = 1; q < D2Q9::q; ++q) {
@@ -363,6 +374,7 @@ void TwoPhaseSolver::collide() {
                 const int k = dist_index(x, y, q);
                 const double feq_a = equilibrium(q, rho_a_[s], ux_[s], uy_[s]);
                 const double feq_b = equilibrium(q, rho_b_[s], ux_[s], uy_[s]);
+                // A/B 两个分布函数分别松弛，并叠加各自受到的力项。
                 fa_[k] -= omega_a_ * (fa_[k] - feq_a);
                 fb_[k] -= omega_b_ * (fb_[k] - feq_b);
                 fa_[k] += forcing_term(q, ux_[s], uy_[s], force_ax_[s], force_ay_[s], omega_a_);
@@ -388,6 +400,7 @@ void TwoPhaseSolver::stream() {
                 const int dst_y = y + D2Q9::cy[q];
                 if (is_outside(dst_x, dst_y) || solid_[scalar_index(dst_x, dst_y)]) {
                     const int opposite = D2Q9::opposite[q];
+                    // 撞到固体壁面或计算域外侧时执行反弹，形成无滑移边界。
                     fa_next_[dist_index(x, y, opposite)] += fa_[dist_index(x, y, q)];
                     fb_next_[dist_index(x, y, opposite)] += fb_[dist_index(x, y, q)];
                     continue;
@@ -405,9 +418,11 @@ void TwoPhaseSolver::stream() {
 
 void TwoPhaseSolver::apply_inlet_outlet() {
     for (int y = 1; y < ny_ - 1; ++y) {
+        // 左边界固定为红色注入相入口，持续把 A 相推入细管。
         set_equilibrium_cell(
             0, y, config_.rho_high, config_.rho_low, config_.inlet_velocity, 0.0);
 
+        // 右边界采用零梯度式出口：复制近出口处的密度和受限速度。
         const int source_base = dist_index(nx_ - 2, y, 0);
         const double rho_a = std::max(local_density(fa_, source_base), config_.rho_low);
         const double rho_b = std::max(local_density(fb_, source_base), config_.rho_low);

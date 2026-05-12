@@ -7,6 +7,7 @@
 namespace lbm {
 
 struct SolverConfig {
+    // tau 控制运动黏度：nu = cs2 * (tau - 0.5)。
     double tau = 0.8;
     double initial_rho = 1.0;
 };
@@ -36,6 +37,7 @@ public:
 private:
     Grid grid_;
     SolverConfig config_;
+    // 单松弛时间 BGK 碰撞频率。
     double omega_;
 
     static double equilibrium(int direction, double rho, double ux, double uy);

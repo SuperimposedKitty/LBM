@@ -9,14 +9,16 @@
 namespace lbm {
 
 struct TwoPhaseConfig {
+    // 两个组分各自拥有松弛时间和分布函数。
     double tau_a = 1.0;
     double tau_b = 1.0;
     double rho_high = 1.0;
     double rho_low = 0.02;
+    // 正的 Shan-Chen 耦合强度用于促使 A/B 两相分离。
     double interaction_strength = 3.0;
     double inlet_velocity = 0.02;
     double body_force_x = 1.0e-6;
-    // Measured through phase A: below 90 degrees makes the injected phase wall-wetting.
+    // 接触角从 A 相一侧度量；小于 90 度时，注入相更容易润湿固壁。
     double contact_angle_degrees = 90.0;
     double wall_adhesion_strength = 0.08;
 };
@@ -52,6 +54,7 @@ private:
     double omega_a_{};
     double omega_b_{};
 
+    // fa/fb 分别是红/蓝组分的分布函数；rho/ux/uy 是混合物宏观场。
     std::vector<double> fa_;
     std::vector<double> fb_;
     std::vector<double> fa_next_;

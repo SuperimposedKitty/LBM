@@ -58,7 +58,7 @@ target_compile_definitions(lbm
 
 function(configure_lbm_target target_name)
     if(MSVC)
-        target_compile_options(${target_name} PRIVATE /FS)
+        target_compile_options(${target_name} PRIVATE /FS /utf-8)
     endif()
 
     if(LBM_MULTI_CONFIG)

@@ -70,10 +70,11 @@ inline std::string sequential_color(double t) {
 }
 
 inline std::string phase_color(double t) {
+    // 相场色带采用蓝-黄-红；phi 接近 0 的界面用黄色突出显示。
     constexpr std::array<std::array<int, 3>, 5> stops{{
         {{31, 78, 121}},
         {{104, 166, 190}},
-        {{244, 246, 247}},
+        {{247, 201, 72}},
         {{224, 122, 95}},
         {{150, 45, 56}},
     }};

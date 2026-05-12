@@ -1,0 +1,147 @@
+# 格子玻尔兹曼算法说明
+
+本文档说明本项目中单相和两相格子玻尔兹曼方法的基本原理、代码实现方式和当前案例设置。
+
+## 1. D2Q9 格子模型
+
+项目采用二维九速度 D2Q9 模型。每个格点存储 9 个分布函数 `f_i`，方向包括 1 个静止方向、4 个轴向方向和 4 个对角方向。方向、权重和反向方向定义在 `include/lbm/lattice.hpp` 中。
+
+宏观密度和速度由分布函数求矩得到：
+
+```text
+rho = sum_i f_i
+rho * u = sum_i c_i * f_i
+```
+
+其中 `c_i` 是第 `i` 个离散速度。D2Q9 的格子声速平方为 `cs2 = 1/3`。
+
+## 2. 单相 BGK/SRT LBM
+
+单相求解器位于 `include/lbm/solver.hpp` 和 `src/solver.cpp`。它使用单松弛时间 BGK 模型：
+
+```text
+f_i(x + c_i, t + 1) = f_i(x, t) - omega * (f_i - f_i_eq)
+omega = 1 / tau
+nu = cs2 * (tau - 0.5)
+```
+
+`tau` 控制运动黏度，必须大于 `0.5`，否则黏度非正，计算会失去物理意义。
+
+每一步计算分为三段：
+
+1. `compute_macroscopic()`：由分布函数求密度和速度。
+2. `collide()`：用 BGK 公式把分布函数松弛到平衡态。
+3. `stream_periodic()` 或 `stream_lid_driven_cavity()`：把碰撞后的分布函数沿格子方向迁移。
+
+平衡分布 `f_i_eq` 使用低马赫数二阶展开：
+
+```text
+f_i_eq = w_i * rho * (1 + 3 c_i.u + 4.5 (c_i.u)^2 - 1.5 u.u)
+```
+
+该形式适合不可压或弱可压低速流动。实际使用时应保持速度远小于格子声速。
+
+## 3. 单相案例
+
+周期剪切波案例使用周期边界。初始速度场为正弦剪切波，随着黏性耗散逐渐衰减，可用于观察质量守恒和黏性扩散。
+
+顶盖驱动方腔案例把四周设为固体壁面，顶壁以给定速度运动。固壁在迁移阶段使用反弹边界，顶盖额外加入运动壁面动量修正，从而形成经典方腔主涡结构。
+
+两个单相案例最终只输出速度场 SVG 动图：
+
+```text
+result/periodic_shear_speed_animation.svg
+result/lid_driven_cavity_speed_animation.svg
+```
+
+## 4. 两相 Shan-Chen 模型
+
+两相求解器位于 `include/lbm/two_phase_solver.hpp` 和 `src/two_phase_solver.cpp`。当前实现使用两个分布函数集合：
+
+```text
+fa_i：红色注入相 A
+fb_i：蓝色被驱替相 B
+```
+
+两个组分分别计算密度：
+
+```text
+rho_a = sum_i fa_i
+rho_b = sum_i fb_i
+rho = rho_a + rho_b
+```
+
+混合速度由总动量和半步力修正得到：
+
+```text
+u = (sum_i c_i * (fa_i + fb_i) + 0.5 * F_total) / rho
+```
+
+两相分离通过 Shan-Chen 伪势力实现。伪势函数为：
+
+```text
+psi(rho) = 1 - exp(-rho)
+```
+
+A 相受到邻近 B 相的伪势作用，B 相受到邻近 A 相的伪势作用。正的 `interaction_strength` 会促使两种组分分离并形成有限厚度界面。
+
+带力碰撞使用 Guo 力项，把体力和相互作用力加入 BGK 碰撞。这样比直接改速度更稳定，也更符合带力 LBM 的时间离散形式。
+
+## 5. 细管驱替和接触角
+
+细管两相驱替案例位于 `examples/capillary_displacement.cpp`。当前设置为：
+
+- 上下边界是固体细管壁面。
+- 初始时管内流体全部为蓝色 B 相。
+- 左边界持续注入红色 A 相。
+- 右边界采用近似零梯度出口，复制近出口位置的密度和受限速度。
+- 计算持续到出口段红相占比达到阈值，或达到最大步数。
+
+接触角通过流体-固体黏附力近似体现。代码把 `contact_angle_degrees` 转换为 `cos(theta)`，再让固壁对 A/B 两相施加相反偏好：
+
+```text
+theta < 90 deg：A 相更润湿壁面
+theta = 90 deg：中性润湿
+theta > 90 deg：B 相更润湿壁面
+```
+
+这不是严格的几何接触角边界条件，而是 Shan-Chen 模型中常用的壁面润湿力近似。实际接触角还会受到网格分辨率、相互作用强度、密度比和壁面黏附强度共同影响。
+
+## 6. 两相可视化
+
+两相动图输出的是相场：
+
+```text
+phi = (rho_a - rho_b) / rho
+```
+
+含义如下：
+
+```text
+phi ->  1：红色注入相占优
+phi -> -1：蓝色被驱替相占优
+phi ->  0：两相界面
+```
+
+之前界面看起来发白，是因为相场色带把 `phi = 0` 映射到接近白色的中间颜色。现在色带改为蓝-黄-红，界面附近用黄色显示，更容易从红蓝两相中辨认出来。
+
+两相案例最终输出：
+
+```text
+result/capillary_phase_animation.svg
+```
+
+## 7. 输出和构建约定
+
+项目运行后只输出最终 SVG 动图到源码根目录下的 `result` 文件夹。编译产物按构建类型放置：
+
+```text
+build/RelWithDebInfo/bin/   exe, dll, pdb
+build/RelWithDebInfo/lib/   lib, exp
+```
+
+默认构建类型是 `RelWithDebInfo`，推荐使用：
+
+```powershell
+.\scripts\build_vs2022.bat
+```

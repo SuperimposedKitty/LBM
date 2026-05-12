@@ -87,6 +87,7 @@ void Solver::initialize_lid_driven_cavity(double lid_velocity) {
 }
 
 void Solver::step() {
+    // 周期单相更新：宏观量求矩 -> BGK 碰撞 -> 迁移。
     compute_macroscopic();
     collide();
     stream_periodic();
@@ -94,6 +95,7 @@ void Solver::step() {
 }
 
 void Solver::step_lid_driven_cavity(double lid_velocity) {
+    // 方腔案例跳过固体壁面内的碰撞，并在迁移阶段执行反弹边界。
     compute_macroscopic_fluid_only(lid_velocity);
     collide_fluid_only();
     stream_lid_driven_cavity(lid_velocity);
@@ -193,6 +195,7 @@ void Solver::write_vtk(const std::string& path) const {
 }
 
 double Solver::equilibrium(int direction, double rho, double ux, double uy) {
+    // Maxwell-Boltzmann 平衡分布的低马赫数二阶展开。
     const double cu = static_cast<double>(D2Q9::cx[direction]) * ux +
                       static_cast<double>(D2Q9::cy[direction]) * uy;
     const double u2 = ux * ux + uy * uy;
@@ -207,6 +210,7 @@ void Solver::collide() {
             for (int q = 0; q < D2Q9::q; ++q) {
                 const int k = grid_.dist_index(x, y, q);
                 const double feq = equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
+                // BGK/SRT 碰撞把每个方向的分布函数松弛到局部平衡态。
                 grid_.f[k] -= omega_ * (grid_.f[k] - feq);
             }
         }
@@ -232,6 +236,7 @@ void Solver::collide_fluid_only() {
 void Solver::stream_periodic() {
     std::fill(grid_.f_next.begin(), grid_.f_next.end(), 0.0);
 
+    // 迁移步骤把碰撞后的分布函数沿各自格子速度送到邻居单元。
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
             for (int q = 0; q < D2Q9::q; ++q) {
@@ -268,6 +273,7 @@ void Solver::stream_lid_driven_cavity(double lid_velocity) {
                     const double cu_wall = static_cast<double>(D2Q9::cx[q]) * wall_ux +
                                            static_cast<double>(D2Q9::cy[q]) * wall_uy;
                     const int opposite = D2Q9::opposite[q];
+                    // 运动壁面反弹在顶盖方向加入动量修正。
                     const double correction = 2.0 * D2Q9::w[q] * grid_.rho[s] * cu_wall / D2Q9::cs2;
                     grid_.f_next[grid_.dist_index(x, y, opposite)] =
                         grid_.f[grid_.dist_index(x, y, q)] - correction;
@@ -291,6 +297,7 @@ void Solver::compute_macroscopic() {
             double momentum_x = 0.0;
             double momentum_y = 0.0;
 
+            // 密度和动量分别是分布函数的零阶矩和一阶矩。
             for (int q = 0; q < D2Q9::q; ++q) {
                 const double fq = grid_.f[grid_.dist_index(x, y, q)];
                 rho += fq;

@@ -12,6 +12,7 @@ namespace lbm {
 struct Grid {
     int nx{};
     int ny{};
+    // f 按单元优先顺序存储所有 D2Q9 分布函数：(y * nx + x) * q + direction。
     std::vector<double> f;
     std::vector<double> f_next;
     std::vector<double> rho;
@@ -41,6 +42,7 @@ struct Grid {
         return (y * nx + x) * D2Q9::q + direction;
     }
 
+    // 周期边界案例在边缘回绕，而不是设置固体壁面。
     int wrap_x(int x) const {
         if (x < 0) {
             return x + nx;
@@ -63,4 +65,3 @@ struct Grid {
 };
 
 } // namespace lbm
-

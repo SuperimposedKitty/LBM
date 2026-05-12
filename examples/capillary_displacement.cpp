@@ -99,7 +99,7 @@ int main() {
                        std::to_string(nx) + " x " + std::to_string(ny) +
                        "; contact angle: " +
                        std::to_string(static_cast<int>(config.contact_angle_degrees)) +
-                       " deg; red: injected phase; blue: displaced phase.";
+                       " deg; red: injected phase; blue: displaced phase; yellow: interface.";
     animation.color_map = lbm::ColorMap::Phase;
     animation.fixed_range = true;
     animation.vmin = -1.0;
