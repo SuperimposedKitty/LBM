@@ -10,6 +10,7 @@ namespace lbm {
 namespace {
 
 constexpr double min_density = 1.0e-12;
+constexpr double pi = 3.14159265358979323846;
 
 double local_density(const std::vector<double>& f, int base) {
     double rho = 0.0;
@@ -50,8 +51,8 @@ TwoPhaseSolver::TwoPhaseSolver(int nx, int ny, TwoPhaseConfig config)
     if (config_.rho_high <= 0.0 || config_.rho_low <= 0.0) {
         throw std::invalid_argument("rho_high and rho_low must be positive.");
     }
-    if (config_.initial_interface_x <= 1 || config_.initial_interface_x >= nx_ - 2) {
-        config_.initial_interface_x = nx_ / 5;
+    if (config_.wall_adhesion_strength < 0.0) {
+        throw std::invalid_argument("wall_adhesion_strength must be non-negative.");
     }
 }
 
@@ -84,9 +85,8 @@ void TwoPhaseSolver::initialize_capillary_displacement() {
             const int s = scalar_index(x, y);
             solid_[s] = y == 0 || y == ny_ - 1 ? 1 : 0;
 
-            const bool injected_region = x <= config_.initial_interface_x;
-            const double rho_a = injected_region ? config_.rho_high : config_.rho_low;
-            const double rho_b = injected_region ? config_.rho_low : config_.rho_high;
+            const double rho_a = config_.rho_low;
+            const double rho_b = solid_[s] ? config_.rho_low : config_.rho_high;
             set_equilibrium_cell(x, y, rho_a, rho_b, 0.0, 0.0);
         }
     }
@@ -129,9 +129,13 @@ TwoPhaseDiagnostics TwoPhaseSolver::diagnostics() const {
             const double speed = std::sqrt(ux_[s] * ux_[s] + uy_[s] * uy_[s]);
             d.max_speed = std::max(d.max_speed, speed);
 
-            const double volume_fraction_a = rho_a_[s] / std::max(rho_[s], min_density);
-            weighted_interface += static_cast<double>(x) * volume_fraction_a;
-            injected_mass += volume_fraction_a;
+            const double injected_saturation = std::clamp(
+                (rho_a_[s] - config_.rho_low) /
+                    std::max(config_.rho_high - config_.rho_low, min_density),
+                0.0,
+                1.0);
+            weighted_interface += static_cast<double>(x) * injected_saturation;
+            injected_mass += injected_saturation;
         }
     }
 
@@ -280,6 +284,9 @@ void TwoPhaseSolver::compute_forces() {
     std::fill(force_bx_.begin(), force_bx_.end(), 0.0);
     std::fill(force_by_.begin(), force_by_.end(), 0.0);
 
+    const double contact_angle = config_.contact_angle_degrees * pi / 180.0;
+    const double wetting_bias = config_.wall_adhesion_strength * std::cos(contact_angle);
+
     for (int y = 1; y < ny_ - 1; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
@@ -292,13 +299,14 @@ void TwoPhaseSolver::compute_forces() {
             double sum_ax = 0.0;
             double sum_ay = 0.0;
             for (int q = 1; q < D2Q9::q; ++q) {
-                const int nx = x + D2Q9::cx[q];
-                const int ny = y + D2Q9::cy[q];
-                if (ny <= 0 || ny >= ny_ - 1) {
+                const int neighbor_x = x + D2Q9::cx[q];
+                const int neighbor_y = y + D2Q9::cy[q];
+                if (neighbor_y < 0 || neighbor_y >= ny_) {
                     continue;
                 }
-                const int wrapped_x = nx < 0 ? 0 : (nx >= nx_ ? nx_ - 1 : nx);
-                const int neighbor = scalar_index(wrapped_x, ny);
+                const int clamped_x =
+                    neighbor_x < 0 ? 0 : (neighbor_x >= nx_ ? nx_ - 1 : neighbor_x);
+                const int neighbor = scalar_index(clamped_x, neighbor_y);
                 if (solid_[neighbor]) {
                     continue;
                 }
@@ -315,6 +323,26 @@ void TwoPhaseSolver::compute_forces() {
             force_ay_[s] = -config_.interaction_strength * psi_a * sum_by;
             force_bx_[s] = -config_.interaction_strength * psi_b * sum_ax;
             force_by_[s] = -config_.interaction_strength * psi_b * sum_ay;
+
+            double wall_x = 0.0;
+            double wall_y = 0.0;
+            for (int q = 1; q < D2Q9::q; ++q) {
+                const int neighbor_x = x + D2Q9::cx[q];
+                const int neighbor_y = y + D2Q9::cy[q];
+                if (is_outside(neighbor_x, neighbor_y)) {
+                    continue;
+                }
+                if (!solid_[scalar_index(neighbor_x, neighbor_y)]) {
+                    continue;
+                }
+                wall_x += D2Q9::w[q] * static_cast<double>(D2Q9::cx[q]);
+                wall_y += D2Q9::w[q] * static_cast<double>(D2Q9::cy[q]);
+            }
+
+            force_ax_[s] += wetting_bias * psi_a * wall_x;
+            force_ay_[s] += wetting_bias * psi_a * wall_y;
+            force_bx_[s] -= wetting_bias * psi_b * wall_x;
+            force_by_[s] -= wetting_bias * psi_b * wall_y;
 
             const double total_rho = std::max(rho_[s], min_density);
             force_ax_[s] += config_.body_force_x * rho_a_[s] / total_rho;

@@ -1,6 +1,7 @@
 #include "lbm/svg_animation.hpp"
 #include "lbm/two_phase_solver.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -29,13 +30,31 @@ std::vector<std::uint8_t> capture_solid(const lbm::TwoPhaseSolver& solver) {
     return solid;
 }
 
+double red_fraction_in_outlet_band(const lbm::TwoPhaseSolver& solver, int band_width) {
+    double fraction_sum = 0.0;
+    int samples = 0;
+    const int x0 = std::max(0, solver.nx() - 1 - band_width);
+    for (int y = 0; y < solver.ny(); ++y) {
+        for (int x = x0; x < solver.nx() - 1; ++x) {
+            if (solver.solid_at(x, y)) {
+                continue;
+            }
+            fraction_sum += std::clamp(0.5 * (solver.phase_at(x, y) + 1.0), 0.0, 1.0);
+            ++samples;
+        }
+    }
+    return samples > 0 ? fraction_sum / static_cast<double>(samples) : 0.0;
+}
+
 } // namespace
 
 int main() {
-    const int nx = 180;
-    const int ny = 34;
-    const int steps = 2500;
-    const int output_interval = 125;
+    const int nx = 200;
+    const int ny = 36;
+    const int max_steps = 18000;
+    const int output_interval = 300;
+    const int outlet_band_width = 14;
+    const double completion_fraction = 0.78;
 
     lbm::TwoPhaseConfig config;
     config.tau_a = 1.0;
@@ -43,9 +62,10 @@ int main() {
     config.rho_high = 1.0;
     config.rho_low = 0.02;
     config.interaction_strength = 3.0;
-    config.inlet_velocity = 0.018;
-    config.body_force_x = 8.0e-7;
-    config.initial_interface_x = 28;
+    config.inlet_velocity = 0.065;
+    config.body_force_x = 2.5e-5;
+    config.contact_angle_degrees = 70.0;
+    config.wall_adhesion_strength = 0.08;
 
     lbm::TwoPhaseSolver solver(nx, ny, config);
     solver.initialize_capillary_displacement();
@@ -53,23 +73,33 @@ int main() {
     const auto before = solver.diagnostics();
     const auto solid = capture_solid(solver);
     std::vector<std::vector<double>> frames;
-    frames.reserve(static_cast<std::size_t>(steps / output_interval + 2));
+    frames.reserve(static_cast<std::size_t>(max_steps / output_interval + 2));
     frames.push_back(capture_phase(solver));
 
-    for (int step = 1; step <= steps; ++step) {
+    int completed_steps = 0;
+    double outlet_red_fraction = red_fraction_in_outlet_band(solver, outlet_band_width);
+    for (int step = 1; step <= max_steps; ++step) {
         solver.step();
-        if (step % output_interval == 0 || step == steps) {
+        completed_steps = step;
+        outlet_red_fraction = red_fraction_in_outlet_band(solver, outlet_band_width);
+        const bool completed = outlet_red_fraction >= completion_fraction;
+        if (step % output_interval == 0 || completed || step == max_steps) {
             frames.push_back(capture_phase(solver));
+        }
+        if (completed) {
+            break;
         }
     }
 
     lbm::ScalarAnimationOptions animation;
     animation.cell = 3;
-    animation.fps = 8.0;
-    animation.title = "Two-phase capillary displacement";
+    animation.fps = 10.0;
+    animation.title = "Two-phase capillary displacement with wall wetting";
     animation.footer = "Frames: " + std::to_string(frames.size()) + "; grid: " +
                        std::to_string(nx) + " x " + std::to_string(ny) +
-                       "; red: injected phase; blue: displaced phase; dark gray: wall.";
+                       "; contact angle: " +
+                       std::to_string(static_cast<int>(config.contact_angle_degrees)) +
+                       " deg; red: injected phase; blue: displaced phase.";
     animation.color_map = lbm::ColorMap::Phase;
     animation.fixed_range = true;
     animation.vmin = -1.0;
@@ -80,13 +110,17 @@ int main() {
     const auto after = solver.diagnostics();
     std::cout << "D2Q9 two-phase capillary displacement example\n";
     std::cout << "grid: " << nx << " x " << ny << '\n';
-    std::cout << "steps: " << steps << '\n';
+    std::cout << "max steps: " << max_steps << '\n';
+    std::cout << "completed steps: " << completed_steps << '\n';
     std::cout << "output interval: " << output_interval << '\n';
     std::cout << "tau_a: " << config.tau_a << '\n';
     std::cout << "tau_b: " << config.tau_b << '\n';
     std::cout << "interaction strength: " << config.interaction_strength << '\n';
     std::cout << "inlet velocity: " << config.inlet_velocity << '\n';
     std::cout << "body force x: " << config.body_force_x << '\n';
+    std::cout << "contact angle: " << config.contact_angle_degrees << '\n';
+    std::cout << "wall adhesion strength: " << config.wall_adhesion_strength << '\n';
+    std::cout << "outlet red fraction: " << outlet_red_fraction << '\n';
     std::cout << "initial injected-fluid centroid x: " << before.interface_x << '\n';
     std::cout << "final injected-fluid centroid x: " << after.interface_x << '\n';
     std::cout << "injected-fluid centroid displacement: " << after.interface_x - before.interface_x

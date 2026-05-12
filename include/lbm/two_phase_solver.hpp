@@ -16,7 +16,9 @@ struct TwoPhaseConfig {
     double interaction_strength = 3.0;
     double inlet_velocity = 0.02;
     double body_force_x = 1.0e-6;
-    int initial_interface_x = 32;
+    // Measured through phase A: below 90 degrees makes the injected phase wall-wetting.
+    double contact_angle_degrees = 90.0;
+    double wall_adhesion_strength = 0.08;
 };
 
 struct TwoPhaseDiagnostics {
