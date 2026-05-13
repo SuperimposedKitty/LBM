@@ -33,6 +33,17 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "VS2022 Build"
+    },
+    {
+      "name": "Droplet Impact",
+      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_droplet.exe",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "VS2022 Build"
     }
   ]
 }

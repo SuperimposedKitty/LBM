@@ -119,3 +119,7 @@ configure_lbm_target(lbm_cavity)
 add_executable(lbm_capillary examples/capillary_displacement.cpp)
 target_link_libraries(lbm_capillary PRIVATE lbm)
 configure_lbm_target(lbm_capillary)
+
+add_executable(lbm_droplet examples/droplet_impact.cpp)
+target_link_libraries(lbm_droplet PRIVATE lbm)
+configure_lbm_target(lbm_droplet)

@@ -83,6 +83,20 @@
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
+    },
+    {
+      "label": "Run Droplet Impact",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$exe = 'build/RelWithDebInfo/bin/lbm_droplet.exe'; if (-not (Test-Path $exe)) { throw 'lbm_droplet executable was not found. Run the VS2022 Build task first.' }; & $exe"
+      ],
+      "dependsOn": "VS2022 Build",
+      "problemMatcher": []
     }
   ]
 }

@@ -65,10 +65,12 @@ TwoPhaseSolver::TwoPhaseSolver(int nx, int ny, TwoPhaseConfig config)
     if (config_.darcy_drag_scale < 0.0 || config_.forchheimer_drag_scale < 0.0) {
         throw std::invalid_argument("porous drag scales must be non-negative.");
     }
-    if (config_.porous_start_x < 0 || config_.porous_end_x <= config_.porous_start_x ||
-        config_.porous_end_x > nx_) {
-        config_.porous_start_x = nx_ / 3;
-        config_.porous_end_x = 2 * nx_ / 3;
+    if (config_.porous_start_x < 0 && config_.porous_end_x < 0) {
+        config_.porous_start_x = 0;
+        config_.porous_end_x = 0;
+    } else if (config_.porous_start_x < 0 || config_.porous_end_x <= config_.porous_start_x ||
+               config_.porous_end_x > nx_) {
+        throw std::invalid_argument("porous x range must be empty or inside the domain.");
     }
 }
 
@@ -122,6 +124,36 @@ void TwoPhaseSolver::initialize_capillary_displacement() {
     compute_macroscopic();
 }
 
+void TwoPhaseSolver::initialize_droplet_impact(
+    double center_x, double center_y, double radius, double initial_ux, double initial_uy) {
+    if (radius <= 0.0) {
+        throw std::invalid_argument("droplet radius must be positive.");
+    }
+
+    constexpr double interface_width = 2.0;
+    for (int y = 0; y < ny_; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const int s = scalar_index(x, y);
+            // 液滴撞击案例采用封闭计算域：底面是被撞击固体表面，其他外边界也反弹。
+            solid_[s] = x == 0 || x == nx_ - 1 || y == 0 || y == ny_ - 1 ? 1 : 0;
+            porosity_[s] = solid_[s] ? 0.0 : config_.free_flow_porosity;
+
+            const double dx = static_cast<double>(x) - center_x;
+            const double dy = static_cast<double>(y) - center_y;
+            const double signed_distance = radius - std::sqrt(dx * dx + dy * dy);
+            const double droplet_fraction =
+                solid_[s] ? 0.0 : 0.5 * (1.0 + std::tanh(signed_distance / interface_width));
+            const double rho_a =
+                config_.rho_low + (config_.rho_high - config_.rho_low) * droplet_fraction;
+            const double rho_b =
+                config_.rho_high - (config_.rho_high - config_.rho_low) * droplet_fraction;
+            set_equilibrium_cell(
+                x, y, rho_a, rho_b, initial_ux * droplet_fraction, initial_uy * droplet_fraction);
+        }
+    }
+    compute_macroscopic();
+}
+
 void TwoPhaseSolver::step() {
     // 两相更新：求宏观量 -> 计算相互作用力 -> 带力碰撞 -> 迁移 -> 入口/出口边界。
     compute_macroscopic();
@@ -129,6 +161,15 @@ void TwoPhaseSolver::step() {
     collide();
     stream();
     apply_inlet_outlet();
+    compute_macroscopic();
+}
+
+void TwoPhaseSolver::step_closed() {
+    // 封闭域更新不施加入口/出口，只依赖固壁反弹和体力演化。
+    compute_macroscopic();
+    compute_forces();
+    collide();
+    stream();
     compute_macroscopic();
 }
 
@@ -142,9 +183,20 @@ void TwoPhaseSolver::run(int steps) {
     compute_macroscopic();
 }
 
+void TwoPhaseSolver::run_closed(int steps) {
+    if (steps < 0) {
+        throw std::invalid_argument("steps must be non-negative.");
+    }
+    for (int i = 0; i < steps; ++i) {
+        step_closed();
+    }
+    compute_macroscopic();
+}
+
 TwoPhaseDiagnostics TwoPhaseSolver::diagnostics() const {
     TwoPhaseDiagnostics d{};
     double weighted_interface = 0.0;
+    double weighted_centroid_y = 0.0;
     double injected_mass = 0.0;
     double porous_pore_speed_sum = 0.0;
     int porous_samples = 0;
@@ -172,11 +224,14 @@ TwoPhaseDiagnostics TwoPhaseSolver::diagnostics() const {
                 0.0,
                 1.0);
             weighted_interface += static_cast<double>(x) * injected_saturation;
+            weighted_centroid_y += static_cast<double>(y) * injected_saturation;
             injected_mass += injected_saturation;
         }
     }
 
     d.interface_x = injected_mass > 0.0 ? weighted_interface / injected_mass : 0.0;
+    d.phase_a_centroid_y =
+        injected_mass > 0.0 ? weighted_centroid_y / injected_mass : 0.0;
     d.porous_mean_pore_speed =
         porous_samples > 0 ? porous_pore_speed_sum / static_cast<double>(porous_samples) : 0.0;
     return d;
@@ -401,6 +456,8 @@ void TwoPhaseSolver::compute_forces() {
             const double total_rho = std::max(rho_[s], min_density);
             force_ax_[s] += config_.body_force_x * rho_a_[s] / total_rho;
             force_bx_[s] += config_.body_force_x * rho_b_[s] / total_rho;
+            force_ay_[s] += config_.body_force_y * rho_a_[s] / total_rho;
+            force_by_[s] += config_.body_force_y * rho_b_[s] / total_rho;
 
             if (porosity_[s] > 0.0 && porosity_[s] < config_.free_flow_porosity) {
                 const double permeability = permeability_from_porosity(porosity_[s]);

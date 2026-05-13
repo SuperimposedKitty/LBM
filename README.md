@@ -5,8 +5,9 @@
 - 周期剪切波 `periodic shear wave`
 - 顶盖驱动方腔流 `lid-driven cavity`
 - 细管两相驱替 `capillary displacement`
+- 液滴撞击固体表面并反弹 `droplet impact`
 
-三个案例运行完成后都只输出一个 SVG 动态图片，统一写入项目根目录下的 `result` 文件夹。
+所有案例运行完成后都只输出一个 SVG 动态图片，统一写入项目根目录下的 `result` 文件夹。
 `result` 与 `src` 同级；程序使用编译期写入的绝对路径，因此从 VSCode 运行或直接双击 exe 都会输出到同一个位置。
 
 ## 构建
@@ -37,6 +38,7 @@ build/RelWithDebInfo/lib/   lib, exp
 .\build\RelWithDebInfo\bin\lbm_periodic.exe
 .\build\RelWithDebInfo\bin\lbm_cavity.exe
 .\build\RelWithDebInfo\bin\lbm_capillary.exe
+.\build\RelWithDebInfo\bin\lbm_droplet.exe
 ```
 
 输出文件：
@@ -45,12 +47,14 @@ build/RelWithDebInfo/lib/   lib, exp
 result/periodic_shear_speed_animation.svg
 result/lid_driven_cavity_speed_animation.svg
 result/capillary_phase_animation.svg
+result/droplet_impact_animation.svg
 ```
 
 颜色说明：
 
 - 周期剪切波和顶盖驱动方腔：颜色表示速度大小，深灰表示固壁。
 - 细管两相驱替：红色为注入相，蓝色为被驱替相，深灰为固壁。
+- 液滴撞击：红色为液滴相，蓝色为环境相，黄色为两相界面，深灰为固壁。
 
 ## VSCode
 
@@ -60,3 +64,4 @@ result/capillary_phase_animation.svg
 2. `Terminal -> Run Task -> Run D2Q9 Example`
 3. `Terminal -> Run Task -> Run Lid Driven Cavity`
 4. `Terminal -> Run Task -> Run Capillary Displacement`
+5. `Terminal -> Run Task -> Run Droplet Impact`

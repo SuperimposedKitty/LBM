@@ -18,6 +18,7 @@ struct TwoPhaseConfig {
     double interaction_strength = 3.0;
     double inlet_velocity = 0.02;
     double body_force_x = 1.0e-6;
+    double body_force_y = 0.0;
     // 接触角从 A 相一侧度量；小于 90 度时，注入相更容易润湿固壁。
     double contact_angle_degrees = 90.0;
     double wall_adhesion_strength = 0.08;
@@ -37,6 +38,7 @@ struct TwoPhaseDiagnostics {
     double mass_b = 0.0;
     double max_speed = 0.0;
     double interface_x = 0.0;
+    double phase_a_centroid_y = 0.0;
     double porous_mean_pore_speed = 0.0;
     double porous_max_pore_speed = 0.0;
 };
@@ -52,8 +54,12 @@ public:
     bool solid_at(int x, int y) const;
 
     void initialize_capillary_displacement();
+    void initialize_droplet_impact(
+        double center_x, double center_y, double radius, double initial_ux, double initial_uy);
     void step();
+    void step_closed();
     void run(int steps);
+    void run_closed(int steps);
 
     TwoPhaseDiagnostics diagnostics() const;
     void write_csv(const std::string& path) const;
