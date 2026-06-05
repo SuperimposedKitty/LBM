@@ -1,6 +1,7 @@
 #include "lbm/two_phase_solver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -54,6 +55,21 @@ TwoPhaseSolver::TwoPhaseSolver(int nx, int ny, TwoPhaseConfig config)
     }
     if (config_.wall_adhesion_strength < 0.0) {
         throw std::invalid_argument("wall_adhesion_strength must be non-negative.");
+    }
+    if (config_.bottom_wall_thickness < 1) {
+        throw std::invalid_argument("bottom_wall_thickness must be at least 1.");
+    }
+    if (config_.droplet_interface_width <= 0.0) {
+        throw std::invalid_argument("droplet_interface_width must be positive.");
+    }
+    if (config_.recoloring_strength < 0.0 || config_.recoloring_strength > 1.0) {
+        throw std::invalid_argument("recoloring_strength must be in the range [0, 1].");
+    }
+    if (config_.bottom_wall_repulsion_strength < 0.0) {
+        throw std::invalid_argument("bottom_wall_repulsion_strength must be non-negative.");
+    }
+    if (config_.bottom_wall_repulsion_range < 0) {
+        throw std::invalid_argument("bottom_wall_repulsion_range must be non-negative.");
     }
     if (config_.free_flow_porosity <= 0.0 || config_.free_flow_porosity > 1.0 ||
         config_.porous_porosity <= 0.0 || config_.porous_porosity > 1.0) {
@@ -129,13 +145,17 @@ void TwoPhaseSolver::initialize_droplet_impact(
     if (radius <= 0.0) {
         throw std::invalid_argument("droplet radius must be positive.");
     }
+    if (config_.bottom_wall_thickness >= ny_ - 2) {
+        throw std::invalid_argument("bottom_wall_thickness leaves no room for fluid.");
+    }
 
-    constexpr double interface_width = 2.0;
+    const int bottom_wall = config_.bottom_wall_thickness;
+    const double interface_width = config_.droplet_interface_width;
     for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
             // 液滴撞击案例采用封闭计算域：底面是被撞击固体表面，其他外边界也反弹。
-            solid_[s] = x == 0 || x == nx_ - 1 || y == 0 || y == ny_ - 1 ? 1 : 0;
+            solid_[s] = x == 0 || x == nx_ - 1 || y < bottom_wall || y == ny_ - 1 ? 1 : 0;
             porosity_[s] = solid_[s] ? 0.0 : config_.free_flow_porosity;
 
             const double dx = static_cast<double>(x) - center_x;
@@ -159,6 +179,7 @@ void TwoPhaseSolver::step() {
     compute_macroscopic();
     compute_forces();
     collide();
+    recolor();
     stream();
     apply_inlet_outlet();
     compute_macroscopic();
@@ -169,6 +190,7 @@ void TwoPhaseSolver::step_closed() {
     compute_macroscopic();
     compute_forces();
     collide();
+    recolor();
     stream();
     compute_macroscopic();
 }
@@ -454,6 +476,25 @@ void TwoPhaseSolver::compute_forces() {
             force_by_[s] -= wetting_bias * psi_b * wall_y;
 
             const double total_rho = std::max(rho_[s], min_density);
+            if (config_.bottom_wall_repulsion_strength > 0.0 &&
+                config_.bottom_wall_repulsion_range > 0) {
+                const int distance_from_surface = y - config_.bottom_wall_thickness;
+                if (distance_from_surface >= 0 &&
+                    distance_from_surface < config_.bottom_wall_repulsion_range) {
+                    const double normalized_distance =
+                        static_cast<double>(distance_from_surface) /
+                        static_cast<double>(config_.bottom_wall_repulsion_range);
+                    const double falloff = (1.0 - normalized_distance) *
+                                           (1.0 - normalized_distance);
+                    const double saturation_a = rho_a_[s] / total_rho;
+                    if (saturation_a > 0.08) {
+                        const double repulsion =
+                            config_.bottom_wall_repulsion_strength * falloff *
+                            saturation_a * psi_a;
+                        force_ay_[s] += repulsion;
+                    }
+                }
+            }
             force_ax_[s] += config_.body_force_x * rho_a_[s] / total_rho;
             force_bx_[s] += config_.body_force_x * rho_b_[s] / total_rho;
             force_ay_[s] += config_.body_force_y * rho_a_[s] / total_rho;
@@ -501,6 +542,121 @@ void TwoPhaseSolver::collide() {
                 fb_[k] -= omega_b_ * (fb_[k] - feq_b);
                 fa_[k] += forcing_term(q, ux_[s], uy_[s], force_ax_[s], force_ay_[s], omega_a_);
                 fb_[k] += forcing_term(q, ux_[s], uy_[s], force_bx_[s], force_by_[s], omega_b_);
+            }
+        }
+    }
+}
+
+void TwoPhaseSolver::recolor() {
+    if (config_.recoloring_strength <= 0.0) {
+        return;
+    }
+
+    std::vector<double> phase(rho_.size(), 0.0);
+    for (int y = 0; y < ny_; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const int s = scalar_index(x, y);
+            if (solid_[s]) {
+                continue;
+            }
+            phase[s] = (rho_a_[s] - rho_b_[s]) / std::max(rho_[s], min_density);
+        }
+    }
+
+    for (int y = 1; y < ny_ - 1; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const int s = scalar_index(x, y);
+            if (solid_[s]) {
+                continue;
+            }
+
+            double grad_x = 0.0;
+            double grad_y = 0.0;
+            for (int q = 1; q < D2Q9::q; ++q) {
+                const int neighbor_x = x + D2Q9::cx[q];
+                const int neighbor_y = y + D2Q9::cy[q];
+                if (is_outside(neighbor_x, neighbor_y)) {
+                    continue;
+                }
+                const int neighbor = scalar_index(neighbor_x, neighbor_y);
+                if (solid_[neighbor]) {
+                    continue;
+                }
+                grad_x += D2Q9::w[q] * phase[neighbor] * static_cast<double>(D2Q9::cx[q]);
+                grad_y += D2Q9::w[q] * phase[neighbor] * static_cast<double>(D2Q9::cy[q]);
+            }
+
+            const double grad_norm = std::sqrt(grad_x * grad_x + grad_y * grad_y);
+            if (grad_norm <= 1.0e-12) {
+                continue;
+            }
+
+            const double total_rho = std::max(rho_[s], min_density);
+            const double ratio_a = std::clamp(rho_a_[s] / total_rho, 0.0, 1.0);
+            const double ratio_b = 1.0 - ratio_a;
+            if (ratio_a < 0.04 || ratio_a > 0.96) {
+                continue;
+            }
+            const double strength = config_.recoloring_strength * ratio_a * ratio_b * total_rho;
+
+            std::array<double, D2Q9::q> total_f{};
+            std::array<double, D2Q9::q> recolored_a{};
+            double recolored_mass_a = 0.0;
+            for (int q = 0; q < D2Q9::q; ++q) {
+                const int k = dist_index(x, y, q);
+                total_f[q] = fa_[k] + fb_[k];
+                if (total_f[q] <= min_density) {
+                    continue;
+                }
+
+                double directional_alignment = 0.0;
+                if (q > 0) {
+                    const double dir_norm = std::sqrt(
+                        static_cast<double>(D2Q9::cx[q] * D2Q9::cx[q] +
+                                            D2Q9::cy[q] * D2Q9::cy[q]));
+                    directional_alignment =
+                        (static_cast<double>(D2Q9::cx[q]) * grad_x +
+                         static_cast<double>(D2Q9::cy[q]) * grad_y) /
+                        (dir_norm * grad_norm);
+                }
+
+                const double correction = strength * D2Q9::w[q] * directional_alignment;
+                recolored_a[q] =
+                    std::clamp(ratio_a * total_f[q] + correction, 0.0, total_f[q]);
+                recolored_mass_a += recolored_a[q];
+            }
+
+            if (recolored_mass_a > min_density) {
+                const double target_mass_a = rho_a_[s];
+                const double factor = target_mass_a / recolored_mass_a;
+                for (int q = 0; q < D2Q9::q; ++q) {
+                    recolored_a[q] = std::clamp(recolored_a[q] * factor, 0.0, total_f[q]);
+                }
+
+                double corrected_mass_a = 0.0;
+                for (double value : recolored_a) {
+                    corrected_mass_a += value;
+                }
+                double residual = target_mass_a - corrected_mass_a;
+                if (std::abs(residual) > 1.0e-12) {
+                    double capacity = 0.0;
+                    for (int q = 0; q < D2Q9::q; ++q) {
+                        capacity += residual > 0.0 ? total_f[q] - recolored_a[q] : recolored_a[q];
+                    }
+                    if (capacity > min_density) {
+                        for (int q = 0; q < D2Q9::q; ++q) {
+                            const double share =
+                                residual > 0.0 ? total_f[q] - recolored_a[q] : recolored_a[q];
+                            recolored_a[q] += residual * share / capacity;
+                        }
+                    }
+                }
+            }
+
+            for (int q = 0; q < D2Q9::q; ++q) {
+                const int k = dist_index(x, y, q);
+                fa_[k] = std::clamp(recolored_a[q], 0.0, total_f[q]);
+                fb_[k] = total_f[q] - fa_[k];
             }
         }
     }

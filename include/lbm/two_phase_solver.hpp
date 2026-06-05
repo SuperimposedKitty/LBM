@@ -22,6 +22,14 @@ struct TwoPhaseConfig {
     // 接触角从 A 相一侧度量；小于 90 度时，注入相更容易润湿固壁。
     double contact_angle_degrees = 90.0;
     double wall_adhesion_strength = 0.08;
+    // 液滴撞击案例可单独加厚底部固壁，并压窄初始相界面以减少过度弥散。
+    int bottom_wall_thickness = 1;
+    double droplet_interface_width = 2.0;
+    // Recoloring 强度用于抑制两相界面数值扩散；0 表示关闭。
+    double recoloring_strength = 0.0;
+    // 液滴撞击可用短程壁面排斥力表示非润湿表面的弹性反推。
+    double bottom_wall_repulsion_strength = 0.0;
+    int bottom_wall_repulsion_range = 0;
     // 孔隙度为 1 表示自由流动区；中间多孔区默认孔隙度为 0.3。
     double free_flow_porosity = 1.0;
     double porous_porosity = 0.3;
@@ -99,6 +107,7 @@ private:
     void compute_macroscopic();
     void compute_forces();
     void collide();
+    void recolor();
     void stream();
     void apply_inlet_outlet();
     void set_equilibrium_cell(int x, int y, double rho_a, double rho_b, double ux, double uy);

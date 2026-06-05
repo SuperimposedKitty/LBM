@@ -17,7 +17,8 @@ namespace lbm {
 
 enum class ColorMap {
     Sequential,
-    Phase
+    Phase,
+    PhaseHighContrast
 };
 
 struct ScalarAnimationOptions {
@@ -29,6 +30,10 @@ struct ScalarAnimationOptions {
     bool fixed_range = false;
     double vmin = 0.0;
     double vmax = 1.0;
+    bool highlight_solid_surface = false;
+    int solid_surface_y = 1;
+    int solid_surface_thickness = 3;
+    std::string solid_surface_color = "#111827";
 };
 
 inline std::filesystem::path result_path(const std::string& filename) {
@@ -89,8 +94,34 @@ inline std::string phase_color(double t) {
     return svg_rgb_hex(r, g, b);
 }
 
+inline std::string phase_high_contrast_color(double t) {
+    // 液滴撞击用更亮的红色和更深的蓝色，避免红色液滴在动画中显得发暗或消失。
+    constexpr std::array<std::array<int, 3>, 5> stops{{
+        {{18, 52, 104}},
+        {{62, 127, 190}},
+        {{255, 214, 74}},
+        {{244, 112, 82}},
+        {{218, 38, 52}},
+    }};
+
+    t = std::clamp(t, 0.0, 1.0);
+    const double scaled = t * static_cast<double>(stops.size() - 1);
+    const int i = std::min(static_cast<int>(scaled), static_cast<int>(stops.size()) - 2);
+    const double local = scaled - static_cast<double>(i);
+    const int r = static_cast<int>(std::round(svg_lerp(stops[i][0], stops[i + 1][0], local)));
+    const int g = static_cast<int>(std::round(svg_lerp(stops[i][1], stops[i + 1][1], local)));
+    const int b = static_cast<int>(std::round(svg_lerp(stops[i][2], stops[i + 1][2], local)));
+    return svg_rgb_hex(r, g, b);
+}
+
 inline std::string scalar_color(ColorMap color_map, double t) {
-    return color_map == ColorMap::Phase ? phase_color(t) : sequential_color(t);
+    if (color_map == ColorMap::Phase) {
+        return phase_color(t);
+    }
+    if (color_map == ColorMap::PhaseHighContrast) {
+        return phase_high_contrast_color(t);
+    }
+    return sequential_color(t);
 }
 
 inline void write_visibility_values(std::ofstream& out, std::size_t active, std::size_t count) {
@@ -208,6 +239,16 @@ inline void write_scalar_animation_svg(
         out << "\" dur=\"" << std::fixed << std::setprecision(6) << duration
             << "s\" repeatCount=\"indefinite\"/>\n";
         out << "  </g>\n";
+    }
+
+    if (options.highlight_solid_surface) {
+        const int surface_y = std::clamp(options.solid_surface_y, 0, ny);
+        const int line_y = margin + 30 + (ny - surface_y) * cell;
+        out << "  <line x1=\"" << margin << "\" y1=\"" << line_y << "\" x2=\""
+            << margin + plot_w << "\" y2=\"" << line_y << "\" stroke=\""
+            << options.solid_surface_color << "\" stroke-width=\""
+            << std::max(1, options.solid_surface_thickness)
+            << "\" stroke-linecap=\"square\"/>\n";
     }
 
     out << "  <rect x=\"" << margin << "\" y=\"" << margin + 30 << "\" width=\"" << plot_w
