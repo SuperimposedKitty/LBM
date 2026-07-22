@@ -42,6 +42,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(lbm
+    src/collision.cpp
     src/geometry_mask.cpp
     src/solver.cpp
     src/two_phase_solver.cpp
@@ -133,3 +134,11 @@ configure_lbm_target(lbm_geometry_flow)
 add_executable(lbm_geometry_displacement examples/geometry_displacement.cpp)
 target_link_libraries(lbm_geometry_displacement PRIVATE lbm)
 configure_lbm_target(lbm_geometry_displacement)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(lbm_numerics_tests tests/lbm_numerics.cpp)
+    target_link_libraries(lbm_numerics_tests PRIVATE lbm)
+    configure_lbm_target(lbm_numerics_tests)
+    add_test(NAME lbm_numerics COMMAND $<TARGET_FILE:lbm_numerics_tests>)
+endif()

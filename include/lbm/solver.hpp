@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lbm/collision.hpp"
 #include "lbm/geometry_mask.hpp"
 #include "lbm/grid.hpp"
 
@@ -12,6 +13,8 @@ struct SolverConfig {
     // tau 控制运动黏度：nu = cs2 * (tau - 0.5)。
     double tau = 0.8;
     double initial_rho = 1.0;
+    CollisionModel collision_model = CollisionModel::MRT;
+    MrtRelaxationRates mrt{};
 };
 
 struct Diagnostics {
@@ -41,14 +44,13 @@ public:
 private:
     Grid grid_;
     SolverConfig config_;
-    // 单松弛时间 BGK 碰撞频率。
-    double omega_;
     std::vector<GeometryCell> geometry_cells_;
     bool masked_flow_initialized_ = false;
 
     static double equilibrium(int direction, double rho, double ux, double uy);
     void collide();
     void collide_fluid_only();
+    void collide_cell(int x, int y);
     void stream_periodic();
     void stream_lid_driven_cavity(double lid_velocity);
     void stream_masked_flow();

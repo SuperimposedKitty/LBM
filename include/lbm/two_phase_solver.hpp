@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lbm/collision.hpp"
 #include "lbm/geometry_mask.hpp"
 #include "lbm/lattice.hpp"
 
@@ -40,6 +41,8 @@ struct TwoPhaseConfig {
     double porous_pore_diameter = 40.0;
     double darcy_drag_scale = 0.06;
     double forchheimer_drag_scale = 0.02;
+    CollisionModel collision_model = CollisionModel::MRT;
+    MrtRelaxationRates mrt{};
 };
 
 struct TwoPhaseDiagnostics {
@@ -50,6 +53,8 @@ struct TwoPhaseDiagnostics {
     double phase_a_centroid_y = 0.0;
     double porous_mean_pore_speed = 0.0;
     double porous_max_pore_speed = 0.0;
+    double interaction_force_balance_x = 0.0;
+    double interaction_force_balance_y = 0.0;
 };
 
 class TwoPhaseSolver {
@@ -79,8 +84,6 @@ private:
     int nx_{};
     int ny_{};
     TwoPhaseConfig config_{};
-    double omega_a_{};
-    double omega_b_{};
 
     // fa/fb 分别是红/蓝组分的分布函数；rho/ux/uy 是混合物宏观场。
     std::vector<double> fa_;
@@ -100,13 +103,14 @@ private:
     std::vector<std::uint8_t> solid_;
     std::vector<GeometryCell> geometry_cells_;
     bool geometry_displacement_initialized_ = false;
+    double interaction_force_balance_x_ = 0.0;
+    double interaction_force_balance_y_ = 0.0;
 
     int scalar_index(int x, int y) const;
     int dist_index(int x, int y, int direction) const;
 
     static double psi(double rho);
     static double equilibrium(int direction, double rho, double ux, double uy);
-    static double forcing_term(int direction, double ux, double uy, double fx, double fy, double omega);
 
     void compute_macroscopic();
     void compute_forces();

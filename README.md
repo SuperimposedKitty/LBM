@@ -34,6 +34,22 @@ build/RelWithDebInfo/bin/   exe, dll, pdb
 build/RelWithDebInfo/lib/   lib, exp
 ```
 
+默认碰撞模型为 D2Q9 MRT。原有构造函数和时间步接口不变；需要复现实验性的旧 BGK 碰撞时，可在配置中切换：
+
+```cpp
+lbm::SolverConfig config;
+config.collision_model = lbm::CollisionModel::BGK;
+
+lbm::TwoPhaseConfig two_phase_config;
+two_phase_config.collision_model = lbm::CollisionModel::BGK;
+```
+
+数值测试不会生成结果文件：
+
+```powershell
+.\scripts\test_vs2022.bat
+```
+
 ## 运行
 
 ```powershell

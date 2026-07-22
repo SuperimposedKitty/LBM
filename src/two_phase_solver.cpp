@@ -27,8 +27,6 @@ TwoPhaseSolver::TwoPhaseSolver(int nx, int ny, TwoPhaseConfig config)
     : nx_(nx),
       ny_(ny),
       config_(config),
-      omega_a_(1.0 / config.tau_a),
-      omega_b_(1.0 / config.tau_b),
       fa_(static_cast<std::size_t>(nx) * ny * D2Q9::q, 0.0),
       fb_(fa_.size(), 0.0),
       fa_next_(fa_.size(), 0.0),
@@ -47,9 +45,10 @@ TwoPhaseSolver::TwoPhaseSolver(int nx, int ny, TwoPhaseConfig config)
     if (nx <= 4 || ny <= 4) {
         throw std::invalid_argument("Two-phase grid dimensions must be greater than 4.");
     }
-    if (config_.tau_a <= 0.5 || config_.tau_b <= 0.5) {
-        throw std::invalid_argument("tau_a and tau_b must be greater than 0.5.");
-    }
+    detail::validate_collision_parameters(
+        config_.collision_model, config_.tau_a, config_.mrt);
+    detail::validate_collision_parameters(
+        config_.collision_model, config_.tau_b, config_.mrt);
     if (config_.rho_high <= 0.0 || config_.rho_low <= 0.0) {
         throw std::invalid_argument("rho_high and rho_low must be positive.");
     }
@@ -311,6 +310,8 @@ TwoPhaseDiagnostics TwoPhaseSolver::diagnostics() const {
         injected_mass > 0.0 ? weighted_centroid_y / injected_mass : 0.0;
     d.porous_mean_pore_speed =
         porous_samples > 0 ? porous_pore_speed_sum / static_cast<double>(porous_samples) : 0.0;
+    d.interaction_force_balance_x = interaction_force_balance_x_;
+    d.interaction_force_balance_y = interaction_force_balance_y_;
     return d;
 }
 
@@ -400,22 +401,7 @@ double TwoPhaseSolver::psi(double rho) {
 
 double TwoPhaseSolver::equilibrium(int direction, double rho, double ux, double uy) {
     // 两个组分共用混合速度，但各自用本组分密度构造平衡分布。
-    const double cu = static_cast<double>(D2Q9::cx[direction]) * ux +
-                      static_cast<double>(D2Q9::cy[direction]) * uy;
-    const double u2 = ux * ux + uy * uy;
-    return D2Q9::w[direction] * rho *
-           (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
-}
-
-double TwoPhaseSolver::forcing_term(
-    int direction, double ux, double uy, double fx, double fy, double omega) {
-    // Guo 力项把体力以二阶精度加入 BGK 碰撞过程。
-    const double cx = static_cast<double>(D2Q9::cx[direction]);
-    const double cy = static_cast<double>(D2Q9::cy[direction]);
-    const double cu = cx * ux + cy * uy;
-    const double term_x = (cx - ux) / D2Q9::cs2 + cu * cx / (D2Q9::cs2 * D2Q9::cs2);
-    const double term_y = (cy - uy) / D2Q9::cs2 + cu * cy / (D2Q9::cs2 * D2Q9::cs2);
-    return (1.0 - 0.5 * omega) * D2Q9::w[direction] * (term_x * fx + term_y * fy);
+    return detail::equilibrium(direction, rho, ux, uy);
 }
 
 void TwoPhaseSolver::compute_macroscopic() {
@@ -471,6 +457,92 @@ void TwoPhaseSolver::compute_forces() {
     const double contact_angle = config_.contact_angle_degrees * pi / 180.0;
     const double wetting_bias = config_.wall_adhesion_strength * std::cos(contact_angle);
 
+    // 每条无序链路只访问一次，并把两组分之间的作用力等大反向地累加到两个端点。
+    constexpr std::array<int, 4> half_directions{1, 2, 5, 6};
+    for (int y = 0; y < ny_; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const int s = scalar_index(x, y);
+            if (solid_[s]) {
+                continue;
+            }
+            for (int q : half_directions) {
+                const int neighbor_x = x + D2Q9::cx[q];
+                const int neighbor_y = y + D2Q9::cy[q];
+                if (is_outside(neighbor_x, neighbor_y)) {
+                    continue;
+                }
+                const int neighbor = scalar_index(neighbor_x, neighbor_y);
+                if (solid_[neighbor]) {
+                    continue;
+                }
+
+                const double cx = static_cast<double>(D2Q9::cx[q]);
+                const double cy = static_cast<double>(D2Q9::cy[q]);
+                const double weight = D2Q9::w[q];
+                const double a_to_b =
+                    -config_.interaction_strength * weight * psi(rho_a_[s]) *
+                    psi(rho_b_[neighbor]);
+                force_ax_[s] += a_to_b * cx;
+                force_ay_[s] += a_to_b * cy;
+                force_bx_[neighbor] -= a_to_b * cx;
+                force_by_[neighbor] -= a_to_b * cy;
+
+                const double b_to_a =
+                    -config_.interaction_strength * weight * psi(rho_b_[s]) *
+                    psi(rho_a_[neighbor]);
+                force_bx_[s] += b_to_a * cx;
+                force_by_[s] += b_to_a * cy;
+                force_ax_[neighbor] -= b_to_a * cx;
+                force_ay_[neighbor] -= b_to_a * cy;
+            }
+        }
+    }
+
+    interaction_force_balance_x_ = 0.0;
+    interaction_force_balance_y_ = 0.0;
+    for (std::size_t s = 0; s < rho_.size(); ++s) {
+        interaction_force_balance_x_ += force_ax_[s] + force_bx_[s];
+        interaction_force_balance_y_ += force_ay_[s] + force_by_[s];
+    }
+
+    // 开放边界外侧使用零法向梯度虚拟储液层，补齐缺失的伪势邻居并保持局部各向同性。
+    for (int y = 0; y < ny_; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const int s = scalar_index(x, y);
+            if (solid_[s]) {
+                continue;
+            }
+            for (int q = 1; q < D2Q9::q; ++q) {
+                const int neighbor_x = x + D2Q9::cx[q];
+                const int neighbor_y = y + D2Q9::cy[q];
+                if (!is_outside(neighbor_x, neighbor_y)) {
+                    continue;
+                }
+                if (neighbor_y < 0 || neighbor_y >= ny_) {
+                    continue;
+                }
+                const int ghost_x = std::clamp(neighbor_x, 0, nx_ - 1);
+                const int ghost = scalar_index(ghost_x, neighbor_y);
+                if (solid_[ghost]) {
+                    continue;
+                }
+                const double cx = static_cast<double>(D2Q9::cx[q]);
+                const double cy = static_cast<double>(D2Q9::cy[q]);
+                const double weight = D2Q9::w[q];
+                const double force_a =
+                    -config_.interaction_strength * weight * psi(rho_a_[s]) *
+                    psi(rho_b_[ghost]);
+                const double force_b =
+                    -config_.interaction_strength * weight * psi(rho_b_[s]) *
+                    psi(rho_a_[ghost]);
+                force_ax_[s] += force_a * cx;
+                force_ay_[s] += force_a * cy;
+                force_bx_[s] += force_b * cx;
+                force_by_[s] += force_b * cy;
+            }
+        }
+    }
+
     for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
@@ -478,36 +550,8 @@ void TwoPhaseSolver::compute_forces() {
                 continue;
             }
 
-            // 流体-流体伪势力：A 相受到邻近 B 相吸引，B 相受到邻近 A 相吸引。
-            double sum_bx = 0.0;
-            double sum_by = 0.0;
-            double sum_ax = 0.0;
-            double sum_ay = 0.0;
-            for (int q = 1; q < D2Q9::q; ++q) {
-                const int neighbor_x = x + D2Q9::cx[q];
-                const int neighbor_y = y + D2Q9::cy[q];
-                if (neighbor_y < 0 || neighbor_y >= ny_) {
-                    continue;
-                }
-                const int clamped_x =
-                    neighbor_x < 0 ? 0 : (neighbor_x >= nx_ ? nx_ - 1 : neighbor_x);
-                const int neighbor = scalar_index(clamped_x, neighbor_y);
-                if (solid_[neighbor]) {
-                    continue;
-                }
-
-                sum_bx += D2Q9::w[q] * psi(rho_b_[neighbor]) * static_cast<double>(D2Q9::cx[q]);
-                sum_by += D2Q9::w[q] * psi(rho_b_[neighbor]) * static_cast<double>(D2Q9::cy[q]);
-                sum_ax += D2Q9::w[q] * psi(rho_a_[neighbor]) * static_cast<double>(D2Q9::cx[q]);
-                sum_ay += D2Q9::w[q] * psi(rho_a_[neighbor]) * static_cast<double>(D2Q9::cy[q]);
-            }
-
             const double psi_a = psi(rho_a_[s]);
             const double psi_b = psi(rho_b_[s]);
-            force_ax_[s] = -config_.interaction_strength * psi_a * sum_bx;
-            force_ay_[s] = -config_.interaction_strength * psi_a * sum_by;
-            force_bx_[s] = -config_.interaction_strength * psi_b * sum_ax;
-            force_by_[s] = -config_.interaction_strength * psi_b * sum_ay;
 
             // 流体-固体黏附力：只统计邻近固体格点，用于体现接触角作用。
             double wall_x = 0.0;
@@ -588,15 +632,39 @@ void TwoPhaseSolver::collide() {
                 continue;
             }
 
+            detail::D2Q9Population population_a{};
+            detail::D2Q9Population population_b{};
             for (int q = 0; q < D2Q9::q; ++q) {
-                const int k = dist_index(x, y, q);
-                const double feq_a = equilibrium(q, rho_a_[s], ux_[s], uy_[s]);
-                const double feq_b = equilibrium(q, rho_b_[s], ux_[s], uy_[s]);
-                // A/B 两个分布函数分别松弛，并叠加各自受到的力项。
-                fa_[k] -= omega_a_ * (fa_[k] - feq_a);
-                fb_[k] -= omega_b_ * (fb_[k] - feq_b);
-                fa_[k] += forcing_term(q, ux_[s], uy_[s], force_ax_[s], force_ay_[s], omega_a_);
-                fb_[k] += forcing_term(q, ux_[s], uy_[s], force_bx_[s], force_by_[s], omega_b_);
+                population_a[q] = fa_[dist_index(x, y, q)];
+                population_b[q] = fb_[dist_index(x, y, q)];
+            }
+            const detail::D2Q9Population source_a = detail::guo_source(
+                ux_[s], uy_[s], force_ax_[s], force_ay_[s]);
+            const detail::D2Q9Population source_b = detail::guo_source(
+                ux_[s], uy_[s], force_bx_[s], force_by_[s]);
+            detail::collide_population(
+                population_a,
+                rho_a_[s],
+                ux_[s],
+                uy_[s],
+                config_.tau_a,
+                config_.collision_model,
+                config_.mrt,
+                source_a,
+                1.0 / config_.tau_a);
+            detail::collide_population(
+                population_b,
+                rho_b_[s],
+                ux_[s],
+                uy_[s],
+                config_.tau_b,
+                config_.collision_model,
+                config_.mrt,
+                source_b,
+                1.0 / config_.tau_b);
+            for (int q = 0; q < D2Q9::q; ++q) {
+                fa_[dist_index(x, y, q)] = population_a[q];
+                fb_[dist_index(x, y, q)] = population_b[q];
             }
         }
     }

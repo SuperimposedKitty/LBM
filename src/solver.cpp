@@ -17,11 +17,9 @@ constexpr double pi = 3.141592653589793238462643383279502884;
 
 Solver::Solver(int nx, int ny, SolverConfig config)
     : grid_(nx, ny),
-      config_(config),
-      omega_(1.0 / config.tau) {
-    if (config_.tau <= 0.5) {
-        throw std::invalid_argument("tau must be greater than 0.5 for positive viscosity.");
-    }
+      config_(config) {
+    detail::validate_collision_parameters(
+        config_.collision_model, config_.tau, config_.mrt);
 
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
@@ -143,7 +141,7 @@ void Solver::initialize_masked_flow(const GeometryMask& mask, double inlet_veloc
 }
 
 void Solver::step() {
-    // 周期单相更新：宏观量求矩 -> BGK 碰撞 -> 迁移。
+    // 周期单相更新：宏观量求矩 -> 可配置碰撞 -> 迁移。
     compute_macroscopic();
     collide();
     stream_periodic();
@@ -267,23 +265,13 @@ void Solver::write_vtk(const std::string& path) const {
 
 double Solver::equilibrium(int direction, double rho, double ux, double uy) {
     // Maxwell-Boltzmann 平衡分布的低马赫数二阶展开。
-    const double cu = static_cast<double>(D2Q9::cx[direction]) * ux +
-                      static_cast<double>(D2Q9::cy[direction]) * uy;
-    const double u2 = ux * ux + uy * uy;
-    return D2Q9::w[direction] * rho *
-           (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u2);
+    return detail::equilibrium(direction, rho, ux, uy);
 }
 
 void Solver::collide() {
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
-            const int s = grid_.scalar_index(x, y);
-            for (int q = 0; q < D2Q9::q; ++q) {
-                const int k = grid_.dist_index(x, y, q);
-                const double feq = equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
-                // BGK/SRT 碰撞把每个方向的分布函数松弛到局部平衡态。
-                grid_.f[k] -= omega_ * (grid_.f[k] - feq);
-            }
+            collide_cell(x, y);
         }
     }
 }
@@ -295,12 +283,27 @@ void Solver::collide_fluid_only() {
             if (grid_.solid[s]) {
                 continue;
             }
-            for (int q = 0; q < D2Q9::q; ++q) {
-                const int k = grid_.dist_index(x, y, q);
-                const double feq = equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
-                grid_.f[k] -= omega_ * (grid_.f[k] - feq);
-            }
+            collide_cell(x, y);
         }
+    }
+}
+
+void Solver::collide_cell(int x, int y) {
+    const int s = grid_.scalar_index(x, y);
+    detail::D2Q9Population population{};
+    for (int q = 0; q < D2Q9::q; ++q) {
+        population[q] = grid_.f[grid_.dist_index(x, y, q)];
+    }
+    detail::collide_population(
+        population,
+        grid_.rho[s],
+        grid_.ux[s],
+        grid_.uy[s],
+        config_.tau,
+        config_.collision_model,
+        config_.mrt);
+    for (int q = 0; q < D2Q9::q; ++q) {
+        grid_.f[grid_.dist_index(x, y, q)] = population[q];
     }
 }
 
@@ -395,9 +398,28 @@ void Solver::apply_masked_boundaries(double inlet_velocity) {
             const int s = grid_.scalar_index(x, y);
             const GeometryCell cell = geometry_cells_[s];
             if (cell == GeometryCell::Inlet) {
+                const int source_x = x + 1;
+                double source_rho = 0.0;
+                double source_momentum_x = 0.0;
+                double source_momentum_y = 0.0;
                 for (int q = 0; q < D2Q9::q; ++q) {
+                    const double value = grid_.f[grid_.dist_index(source_x, y, q)];
+                    source_rho += value;
+                    source_momentum_x += static_cast<double>(D2Q9::cx[q]) * value;
+                    source_momentum_y += static_cast<double>(D2Q9::cy[q]) * value;
+                }
+                if (source_rho <= 0.0 || !std::isfinite(source_rho)) {
+                    throw std::runtime_error("Non-physical density next to masked inlet.");
+                }
+                const double source_ux = source_momentum_x / source_rho;
+                const double source_uy = source_momentum_y / source_rho;
+                for (int q = 0; q < D2Q9::q; ++q) {
+                    const double non_equilibrium =
+                        grid_.f[grid_.dist_index(source_x, y, q)] -
+                        equilibrium(q, source_rho, source_ux, source_uy);
                     grid_.f[grid_.dist_index(x, y, q)] =
-                        equilibrium(q, config_.initial_rho, inlet_velocity, 0.0);
+                        equilibrium(q, config_.initial_rho, inlet_velocity, 0.0) +
+                        non_equilibrium;
                 }
             } else if (cell == GeometryCell::Outlet) {
                 // 复制出口内侧相邻格点的分布函数，形成一阶零梯度出口。
