@@ -50,6 +50,9 @@ void Solver::initialize_shear_wave(double amplitude, int mode) {
         throw std::invalid_argument("mode must be positive.");
     }
 
+    masked_flow_initialized_ = false;
+    geometry_cells_.clear();
+
     for (int y = 0; y < grid_.ny; ++y) {
         const double phase = 2.0 * pi * mode * static_cast<double>(y) /
                              static_cast<double>(grid_.ny);
@@ -67,6 +70,8 @@ void Solver::initialize_shear_wave(double amplitude, int mode) {
 }
 
 void Solver::initialize_lid_driven_cavity(double lid_velocity) {
+    masked_flow_initialized_ = false;
+    geometry_cells_.clear();
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
             const bool is_wall = x == 0 || y == 0 || x == grid_.nx - 1 || y == grid_.ny - 1;
@@ -86,6 +91,57 @@ void Solver::initialize_lid_driven_cavity(double lid_velocity) {
     }
 }
 
+void Solver::initialize_masked_flow(const GeometryMask& mask, double inlet_velocity) {
+    if (mask.width() != grid_.nx || mask.height() != grid_.ny) {
+        throw std::invalid_argument("Geometry dimensions must match the solver grid.");
+    }
+    if (!std::isfinite(inlet_velocity)) {
+        throw std::invalid_argument("inlet_velocity must be finite.");
+    }
+    if (!mask.contains(GeometryCell::Inlet)) {
+        throw std::invalid_argument("Masked flow geometry must contain at least one inlet I.");
+    }
+    if (!mask.contains(GeometryCell::Outlet)) {
+        throw std::invalid_argument("Masked flow geometry must contain at least one outlet O.");
+    }
+
+    geometry_cells_ = mask.cells();
+    for (int y = 0; y < grid_.ny; ++y) {
+        for (int x = 0; x < grid_.nx; ++x) {
+            const int s = grid_.scalar_index(x, y);
+            const GeometryCell cell = geometry_cells_[s];
+            if (cell == GeometryCell::Inlet &&
+                (grid_.nx < 2 || geometry_cells_[grid_.scalar_index(1, y)] == GeometryCell::Solid)) {
+                throw std::invalid_argument("Each inlet I must connect to a fluid cell on its right.");
+            }
+            if (cell == GeometryCell::Outlet &&
+                (grid_.nx < 2 ||
+                 geometry_cells_[grid_.scalar_index(grid_.nx - 2, y)] == GeometryCell::Solid)) {
+                throw std::invalid_argument("Each outlet O must connect to a fluid cell on its left.");
+            }
+        }
+    }
+
+    masked_flow_initialized_ = true;
+    for (int y = 0; y < grid_.ny; ++y) {
+        for (int x = 0; x < grid_.nx; ++x) {
+            const int s = grid_.scalar_index(x, y);
+            const GeometryCell cell = geometry_cells_[s];
+            grid_.solid[s] = cell == GeometryCell::Solid ? 1 : 0;
+            grid_.rho[s] = config_.initial_rho;
+            grid_.ux[s] = cell == GeometryCell::Inlet ? inlet_velocity : 0.0;
+            grid_.uy[s] = 0.0;
+            for (int q = 0; q < D2Q9::q; ++q) {
+                grid_.f[grid_.dist_index(x, y, q)] =
+                    equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
+            }
+        }
+    }
+
+    apply_masked_boundaries(inlet_velocity);
+    compute_macroscopic_masked();
+}
+
 void Solver::step() {
     // 周期单相更新：宏观量求矩 -> BGK 碰撞 -> 迁移。
     compute_macroscopic();
@@ -100,6 +156,21 @@ void Solver::step_lid_driven_cavity(double lid_velocity) {
     collide_fluid_only();
     stream_lid_driven_cavity(lid_velocity);
     compute_macroscopic_fluid_only(lid_velocity);
+}
+
+void Solver::step_masked_flow(double inlet_velocity) {
+    if (!masked_flow_initialized_) {
+        throw std::logic_error("initialize_masked_flow must be called before step_masked_flow.");
+    }
+    if (!std::isfinite(inlet_velocity)) {
+        throw std::invalid_argument("inlet_velocity must be finite.");
+    }
+
+    compute_macroscopic_masked();
+    collide_fluid_only();
+    stream_masked_flow();
+    apply_masked_boundaries(inlet_velocity);
+    compute_macroscopic_masked();
 }
 
 void Solver::run(int steps) {
@@ -289,6 +360,56 @@ void Solver::stream_lid_driven_cavity(double lid_velocity) {
     grid_.f.swap(grid_.f_next);
 }
 
+void Solver::stream_masked_flow() {
+    std::fill(grid_.f_next.begin(), grid_.f_next.end(), 0.0);
+
+    for (int y = 0; y < grid_.ny; ++y) {
+        for (int x = 0; x < grid_.nx; ++x) {
+            const int s = grid_.scalar_index(x, y);
+            if (grid_.solid[s]) {
+                continue;
+            }
+
+            for (int q = 0; q < D2Q9::q; ++q) {
+                const int dst_x = x + D2Q9::cx[q];
+                const int dst_y = y + D2Q9::cy[q];
+                const bool outside =
+                    dst_x < 0 || dst_x >= grid_.nx || dst_y < 0 || dst_y >= grid_.ny;
+                if (outside || grid_.solid[grid_.scalar_index(dst_x, dst_y)]) {
+                    grid_.f_next[grid_.dist_index(x, y, D2Q9::opposite[q])] +=
+                        grid_.f[grid_.dist_index(x, y, q)];
+                    continue;
+                }
+                grid_.f_next[grid_.dist_index(dst_x, dst_y, q)] +=
+                    grid_.f[grid_.dist_index(x, y, q)];
+            }
+        }
+    }
+
+    grid_.f.swap(grid_.f_next);
+}
+
+void Solver::apply_masked_boundaries(double inlet_velocity) {
+    for (int y = 0; y < grid_.ny; ++y) {
+        for (int x = 0; x < grid_.nx; ++x) {
+            const int s = grid_.scalar_index(x, y);
+            const GeometryCell cell = geometry_cells_[s];
+            if (cell == GeometryCell::Inlet) {
+                for (int q = 0; q < D2Q9::q; ++q) {
+                    grid_.f[grid_.dist_index(x, y, q)] =
+                        equilibrium(q, config_.initial_rho, inlet_velocity, 0.0);
+                }
+            } else if (cell == GeometryCell::Outlet) {
+                // 复制出口内侧相邻格点的分布函数，形成一阶零梯度出口。
+                for (int q = 0; q < D2Q9::q; ++q) {
+                    grid_.f[grid_.dist_index(x, y, q)] =
+                        grid_.f[grid_.dist_index(x - 1, y, q)];
+                }
+            }
+        }
+    }
+}
+
 void Solver::compute_macroscopic() {
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
@@ -342,6 +463,36 @@ void Solver::compute_macroscopic_fluid_only(double lid_velocity) {
                 throw std::runtime_error("Non-physical density encountered.");
             }
 
+            grid_.rho[s] = rho;
+            grid_.ux[s] = momentum_x / rho;
+            grid_.uy[s] = momentum_y / rho;
+        }
+    }
+}
+
+void Solver::compute_macroscopic_masked() {
+    for (int y = 0; y < grid_.ny; ++y) {
+        for (int x = 0; x < grid_.nx; ++x) {
+            const int s = grid_.scalar_index(x, y);
+            if (grid_.solid[s]) {
+                grid_.rho[s] = config_.initial_rho;
+                grid_.ux[s] = 0.0;
+                grid_.uy[s] = 0.0;
+                continue;
+            }
+
+            double rho = 0.0;
+            double momentum_x = 0.0;
+            double momentum_y = 0.0;
+            for (int q = 0; q < D2Q9::q; ++q) {
+                const double fq = grid_.f[grid_.dist_index(x, y, q)];
+                rho += fq;
+                momentum_x += static_cast<double>(D2Q9::cx[q]) * fq;
+                momentum_y += static_cast<double>(D2Q9::cy[q]) * fq;
+            }
+            if (rho <= 0.0 || !std::isfinite(rho)) {
+                throw std::runtime_error("Non-physical density encountered in masked flow.");
+            }
             grid_.rho[s] = rho;
             grid_.ux[s] = momentum_x / rho;
             grid_.uy[s] = momentum_y / rho;

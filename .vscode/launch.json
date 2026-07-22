@@ -44,6 +44,28 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "VS2022 Build"
+    },
+    {
+      "name": "Imported Geometry Flow",
+      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_geometry_flow.exe",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "VS2022 Build"
+    },
+    {
+      "name": "Imported Geometry Displacement",
+      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_geometry_displacement.exe",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "VS2022 Build"
     }
   ]
 }

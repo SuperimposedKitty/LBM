@@ -97,6 +97,34 @@
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
+    },
+    {
+      "label": "Run Imported Geometry Flow",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$exe = 'build/RelWithDebInfo/bin/lbm_geometry_flow.exe'; if (-not (Test-Path $exe)) { throw 'lbm_geometry_flow executable was not found. Run the VS2022 Build task first.' }; & $exe"
+      ],
+      "dependsOn": "VS2022 Build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Imported Geometry Displacement",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$exe = 'build/RelWithDebInfo/bin/lbm_geometry_displacement.exe'; if (-not (Test-Path $exe)) { throw 'lbm_geometry_displacement executable was not found. Run the VS2022 Build task first.' }; & $exe"
+      ],
+      "dependsOn": "VS2022 Build",
+      "problemMatcher": []
     }
   ]
 }

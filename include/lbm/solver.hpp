@@ -1,8 +1,10 @@
 #pragma once
 
+#include "lbm/geometry_mask.hpp"
 #include "lbm/grid.hpp"
 
 #include <string>
+#include <vector>
 
 namespace lbm {
 
@@ -26,8 +28,10 @@ public:
 
     void initialize_shear_wave(double amplitude, int mode);
     void initialize_lid_driven_cavity(double lid_velocity);
+    void initialize_masked_flow(const GeometryMask& mask, double inlet_velocity);
     void step();
     void step_lid_driven_cavity(double lid_velocity);
+    void step_masked_flow(double inlet_velocity);
     void run(int steps);
     void run_lid_driven_cavity(int steps, double lid_velocity);
     Diagnostics diagnostics() const;
@@ -39,14 +43,19 @@ private:
     SolverConfig config_;
     // 单松弛时间 BGK 碰撞频率。
     double omega_;
+    std::vector<GeometryCell> geometry_cells_;
+    bool masked_flow_initialized_ = false;
 
     static double equilibrium(int direction, double rho, double ux, double uy);
     void collide();
     void collide_fluid_only();
     void stream_periodic();
     void stream_lid_driven_cavity(double lid_velocity);
+    void stream_masked_flow();
+    void apply_masked_boundaries(double inlet_velocity);
     void compute_macroscopic();
     void compute_macroscopic_fluid_only(double lid_velocity);
+    void compute_macroscopic_masked();
 };
 
 } // namespace lbm

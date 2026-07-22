@@ -42,6 +42,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(lbm
+    src/geometry_mask.cpp
     src/solver.cpp
     src/two_phase_solver.cpp
 )
@@ -54,6 +55,7 @@ target_include_directories(lbm
 target_compile_definitions(lbm
     PUBLIC
         LBM_RESULT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/result"
+        LBM_GEOMETRY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/geometry"
 )
 
 function(configure_lbm_target target_name)
@@ -123,3 +125,11 @@ configure_lbm_target(lbm_capillary)
 add_executable(lbm_droplet examples/droplet_impact.cpp)
 target_link_libraries(lbm_droplet PRIVATE lbm)
 configure_lbm_target(lbm_droplet)
+
+add_executable(lbm_geometry_flow examples/geometry_flow.cpp)
+target_link_libraries(lbm_geometry_flow PRIVATE lbm)
+configure_lbm_target(lbm_geometry_flow)
+
+add_executable(lbm_geometry_displacement examples/geometry_displacement.cpp)
+target_link_libraries(lbm_geometry_displacement PRIVATE lbm)
+configure_lbm_target(lbm_geometry_displacement)

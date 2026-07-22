@@ -122,6 +122,8 @@ bool TwoPhaseSolver::solid_at(int x, int y) const {
 }
 
 void TwoPhaseSolver::initialize_capillary_displacement() {
+    geometry_displacement_initialized_ = false;
+    geometry_cells_.clear();
     for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
@@ -140,6 +142,56 @@ void TwoPhaseSolver::initialize_capillary_displacement() {
     compute_macroscopic();
 }
 
+void TwoPhaseSolver::initialize_geometry_displacement(const GeometryMask& mask) {
+    if (mask.width() != nx_ || mask.height() != ny_) {
+        throw std::invalid_argument("Geometry dimensions must match the two-phase solver grid.");
+    }
+    if (!mask.contains(GeometryCell::Inlet)) {
+        throw std::invalid_argument("Geometry displacement requires at least one inlet I.");
+    }
+    if (!mask.contains(GeometryCell::Outlet)) {
+        throw std::invalid_argument("Geometry displacement requires at least one outlet O.");
+    }
+
+    geometry_cells_ = mask.cells();
+    for (int y = 0; y < ny_; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const int s = scalar_index(x, y);
+            const GeometryCell cell = geometry_cells_[s];
+            if (cell == GeometryCell::Inlet &&
+                (nx_ < 2 || geometry_cells_[scalar_index(1, y)] == GeometryCell::Solid)) {
+                throw std::invalid_argument("Each inlet I must connect to a fluid cell on its right.");
+            }
+            if (cell == GeometryCell::Outlet &&
+                (nx_ < 2 || geometry_cells_[scalar_index(nx_ - 2, y)] == GeometryCell::Solid)) {
+                throw std::invalid_argument("Each outlet O must connect to a fluid cell on its left.");
+            }
+        }
+    }
+
+    geometry_displacement_initialized_ = true;
+    for (int y = 0; y < ny_; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const int s = scalar_index(x, y);
+            const GeometryCell cell = geometry_cells_[s];
+            solid_[s] = cell == GeometryCell::Solid ? 1 : 0;
+            porosity_[s] = solid_[s]
+                               ? 0.0
+                               : (cell == GeometryCell::Porous ? config_.porous_porosity
+                                                               : config_.free_flow_porosity);
+
+            const bool inlet = cell == GeometryCell::Inlet;
+            const double rho_a = inlet ? config_.rho_high : config_.rho_low;
+            const double rho_b = solid_[s] ? config_.rho_low
+                                           : (inlet ? config_.rho_low : config_.rho_high);
+            set_equilibrium_cell(
+                x, y, rho_a, rho_b, inlet ? config_.inlet_velocity : 0.0, 0.0);
+        }
+    }
+    apply_geometry_inlet_outlet();
+    compute_macroscopic();
+}
+
 void TwoPhaseSolver::initialize_droplet_impact(
     double center_x, double center_y, double radius, double initial_ux, double initial_uy) {
     if (radius <= 0.0) {
@@ -148,6 +200,9 @@ void TwoPhaseSolver::initialize_droplet_impact(
     if (config_.bottom_wall_thickness >= ny_ - 2) {
         throw std::invalid_argument("bottom_wall_thickness leaves no room for fluid.");
     }
+
+    geometry_displacement_initialized_ = false;
+    geometry_cells_.clear();
 
     const int bottom_wall = config_.bottom_wall_thickness;
     const double interface_width = config_.droplet_interface_width;
@@ -416,7 +471,7 @@ void TwoPhaseSolver::compute_forces() {
     const double contact_angle = config_.contact_angle_degrees * pi / 180.0;
     const double wetting_bias = config_.wall_adhesion_strength * std::cos(contact_angle);
 
-    for (int y = 1; y < ny_ - 1; ++y) {
+    for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
             if (solid_[s]) {
@@ -526,7 +581,7 @@ void TwoPhaseSolver::compute_forces() {
 }
 
 void TwoPhaseSolver::collide() {
-    for (int y = 1; y < ny_ - 1; ++y) {
+    for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
             if (solid_[s]) {
@@ -563,7 +618,7 @@ void TwoPhaseSolver::recolor() {
         }
     }
 
-    for (int y = 1; y < ny_ - 1; ++y) {
+    for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
             if (solid_[s]) {
@@ -666,7 +721,7 @@ void TwoPhaseSolver::stream() {
     std::fill(fa_next_.begin(), fa_next_.end(), 0.0);
     std::fill(fb_next_.begin(), fb_next_.end(), 0.0);
 
-    for (int y = 1; y < ny_ - 1; ++y) {
+    for (int y = 0; y < ny_; ++y) {
         for (int x = 0; x < nx_; ++x) {
             const int s = scalar_index(x, y);
             if (solid_[s]) {
@@ -695,6 +750,11 @@ void TwoPhaseSolver::stream() {
 }
 
 void TwoPhaseSolver::apply_inlet_outlet() {
+    if (geometry_displacement_initialized_) {
+        apply_geometry_inlet_outlet();
+        return;
+    }
+
     for (int y = 1; y < ny_ - 1; ++y) {
         // 左边界固定为红色注入相入口，持续把 A 相推入细管。
         set_equilibrium_cell(
@@ -715,6 +775,40 @@ void TwoPhaseSolver::apply_inlet_outlet() {
         const double ux = std::clamp(momentum_x / std::max(rho, min_density), -0.08, 0.08);
         const double uy = std::clamp(momentum_y / std::max(rho, min_density), -0.08, 0.08);
         set_equilibrium_cell(nx_ - 1, y, rho_a, rho_b, ux, uy);
+    }
+}
+
+void TwoPhaseSolver::apply_geometry_inlet_outlet() {
+    for (int y = 0; y < ny_; ++y) {
+        for (int x = 0; x < nx_; ++x) {
+            const GeometryCell cell = geometry_cells_[scalar_index(x, y)];
+            if (cell == GeometryCell::Inlet) {
+                set_equilibrium_cell(
+                    x, y, config_.rho_high, config_.rho_low, config_.inlet_velocity, 0.0);
+                continue;
+            }
+            if (cell != GeometryCell::Outlet) {
+                continue;
+            }
+
+            // 出口复制内侧相邻单元的密度和速度，形成近似零梯度开边界。
+            const int source_base = dist_index(x - 1, y, 0);
+            const double rho_a = std::max(local_density(fa_, source_base), config_.rho_low);
+            const double rho_b = std::max(local_density(fb_, source_base), config_.rho_low);
+            double momentum_x = 0.0;
+            double momentum_y = 0.0;
+            for (int q = 0; q < D2Q9::q; ++q) {
+                const double f = fa_[source_base + q] + fb_[source_base + q];
+                momentum_x += static_cast<double>(D2Q9::cx[q]) * f;
+                momentum_y += static_cast<double>(D2Q9::cy[q]) * f;
+            }
+            const double rho = rho_a + rho_b;
+            const double ux =
+                std::clamp(momentum_x / std::max(rho, min_density), -0.08, 0.08);
+            const double uy =
+                std::clamp(momentum_y / std::max(rho, min_density), -0.08, 0.08);
+            set_equilibrium_cell(x, y, rho_a, rho_b, ux, uy);
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lbm/geometry_mask.hpp"
 #include "lbm/lattice.hpp"
 
 #include <cstdint>
@@ -62,6 +63,7 @@ public:
     bool solid_at(int x, int y) const;
 
     void initialize_capillary_displacement();
+    void initialize_geometry_displacement(const GeometryMask& mask);
     void initialize_droplet_impact(
         double center_x, double center_y, double radius, double initial_ux, double initial_uy);
     void step();
@@ -96,6 +98,8 @@ private:
     std::vector<double> force_by_;
     std::vector<double> porosity_;
     std::vector<std::uint8_t> solid_;
+    std::vector<GeometryCell> geometry_cells_;
+    bool geometry_displacement_initialized_ = false;
 
     int scalar_index(int x, int y) const;
     int dist_index(int x, int y, int direction) const;
@@ -110,6 +114,7 @@ private:
     void recolor();
     void stream();
     void apply_inlet_outlet();
+    void apply_geometry_inlet_outlet();
     void set_equilibrium_cell(int x, int y, double rho_a, double rho_b, double ux, double uy);
     bool is_porous_column(int x) const;
     double permeability_from_porosity(double porosity) const;

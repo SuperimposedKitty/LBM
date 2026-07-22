@@ -177,11 +177,41 @@ phi ->  0：两相界面
 ```text
 result/capillary_phase_animation.svg
 result/droplet_impact_animation.svg
+result/geometry_displacement_animation.svg
 ```
 
 细管中间的多孔介质区域会在动图上叠加斜线纹理，底色仍然保留相场颜色。
 
-## 9. 输出和构建约定
+## 9. 几何掩膜导入与边界条件
+
+通用几何读取器位于 `include/lbm/geometry_mask.hpp` 和 `src/geometry_mask.cpp`。它把 `.geom` 文本文件转换为与求解器网格一一对应的单元类型。文件第一行是物理上边界，而求解器内部 `y = 0` 位于底部，因此读取时会反转行坐标。
+
+字符定义如下：
+
+```text
+.：自由流体单元
+#：固体或障碍物单元
+I：左边界入口单元
+O：右边界出口单元
+P：体积平均多孔流体单元
+```
+
+读取器会检查非空行等宽、字符合法性、入口/出口所在列以及是否存在流体单元。求解器初始化时还会检查至少存在一个入口和一个出口，并确认每个入口、出口与域内流体相连。错误信息包含行列位置，便于直接修改几何文件。
+
+单相几何流使用 `initialize_masked_flow()` 和 `step_masked_flow()`。`#` 在迁移阶段执行半格反弹，`I` 每步重构为给定密度和速度的平衡分布，`O` 复制内侧相邻单元的分布函数，近似实现一阶零梯度出口。`P` 在单相求解器中与 `.` 相同。
+
+两相几何驱替使用 `initialize_geometry_displacement()` 和普通 `step()`。入口持续注入红色 A 相，其他流体与出口初始填充蓝色 B 相；`P` 把 `porous_porosity` 写入孔隙度场，并复用第 6 节的 Darcy/Forchheimer 阻力。该模式的入口/出口只作用于文件中标记的格点，不改变细管驱替和液滴碰撞案例的默认边界。
+
+默认几何 `geometry/channel_obstacle.geom` 同时包含菱形固体障碍和孔隙度 `0.3` 的多孔区域。对应输出为：
+
+```text
+result/geometry_flow_speed_animation.svg
+result/geometry_displacement_animation.svg
+```
+
+当前边界是格点级阶梯近似，不包含 STL/CAD 曲面、插值反弹或子网格曲率修正。需要提高曲线精度时，应增加几何网格分辨率并重新标记单元。
+
+## 10. 输出和构建约定
 
 项目运行后只输出最终 SVG 动图到源码根目录下的 `result` 文件夹。编译产物按构建类型放置：
 
