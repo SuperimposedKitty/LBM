@@ -43,9 +43,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(lbm
     src/collision.cpp
+    src/collision3d.cpp
     src/geometry_mask.cpp
+    src/geometry_mask3d.cpp
     src/solver.cpp
+    src/solver3d.cpp
     src/two_phase_solver.cpp
+    src/two_phase_solver3d.cpp
 )
 
 target_include_directories(lbm
@@ -135,10 +139,31 @@ add_executable(lbm_geometry_displacement examples/geometry_displacement.cpp)
 target_link_libraries(lbm_geometry_displacement PRIVATE lbm)
 configure_lbm_target(lbm_geometry_displacement)
 
+add_executable(lbm_d3_cavity examples/d3_lid_driven_cavity.cpp)
+target_link_libraries(lbm_d3_cavity PRIVATE lbm)
+configure_lbm_target(lbm_d3_cavity)
+
+add_executable(lbm_d3_geometry_flow examples/d3_geometry_flow.cpp)
+target_link_libraries(lbm_d3_geometry_flow PRIVATE lbm)
+configure_lbm_target(lbm_d3_geometry_flow)
+
+add_executable(lbm_d3_geometry_displacement examples/d3_geometry_displacement.cpp)
+target_link_libraries(lbm_d3_geometry_displacement PRIVATE lbm)
+configure_lbm_target(lbm_d3_geometry_displacement)
+
+add_executable(lbm_d3_droplet examples/d3_droplet_impact.cpp)
+target_link_libraries(lbm_d3_droplet PRIVATE lbm)
+configure_lbm_target(lbm_d3_droplet)
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(lbm_numerics_tests tests/lbm_numerics.cpp)
     target_link_libraries(lbm_numerics_tests PRIVATE lbm)
     configure_lbm_target(lbm_numerics_tests)
     add_test(NAME lbm_numerics COMMAND $<TARGET_FILE:lbm_numerics_tests>)
+
+    add_executable(lbm_3d_numerics_tests tests/lbm_3d_numerics.cpp)
+    target_link_libraries(lbm_3d_numerics_tests PRIVATE lbm)
+    configure_lbm_target(lbm_3d_numerics_tests)
+    add_test(NAME lbm_3d_numerics COMMAND $<TARGET_FILE:lbm_3d_numerics_tests>)
 endif()

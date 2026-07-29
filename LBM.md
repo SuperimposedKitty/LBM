@@ -243,3 +243,75 @@ build/RelWithDebInfo/lib/   lib, exp
 ```powershell
 .\scripts\build_vs2022.bat
 ```
+
+## 11. 三维 D3Q19 与 D3Q27 扩展
+
+三维模块与原有 D2Q9 模块并行存在，不改变 `D2Q9`、`Grid`、`Solver` 和
+`TwoPhaseSolver` 的公开调用。新增接口为：
+
+```text
+Lattice3DModel::D3Q19 / D3Q27
+Grid3D
+Solver3D
+TwoPhaseSolver3D
+GeometryMask3D
+```
+
+D3Q19 包含静止方向、6 个面中心方向和 12 个棱方向，共 19 个分布函数，
+默认用于三维单相流。D3Q27 再增加 8 个立方体角点方向，共 27 个分布函数，
+对三维界面梯度和壁面方向具有更完整的立方对称性，因此两相求解器默认使用
+D3Q27。两种格子的声速平方仍为 `1/3`，平衡分布仍使用低马赫数二阶展开。
+
+三维 MRT 采用 Hermite 矩子空间分解。非平衡分布被分解为：
+
+```text
+密度模态
+三个动量模态
+体积应力模态
+五个独立剪切应力模态
+剩余高阶动理学模态
+```
+
+单相密度和动量保持守恒；剪切应力以 `1/tau` 松弛，体积应力和高阶模态分别
+使用 `MrtRelaxationRates3D::bulk` 与 `kinetic`。两相 A/B 组分的动量以各自
+`1/tau_a`、`1/tau_b` 向共同混合速度松弛。Guo 力项使用相同的矩分解，并对
+每个子空间应用对应的 `(1 - s/2)` 修正。BGK 分支保留统一松弛公式。
+
+三维两相求解器继续使用 Shan-Chen 多组分伪势。每条三维无序格点链路只计算
+一次，并把作用力等大反向累加到两个端点。润湿力不再假定壁面位于底部，而是
+根据当前流体格点周围的三维固体指示函数求局部壁面方向，因此体素障碍的侧面、
+棱和曲面阶梯都能参与接触角作用。多孔单元继续使用 Kozeny-Carman 渗透率与
+三维 Darcy/Forchheimer 阻力。
+
+三维体素文件由 `GeometryMask3D` 读取，格式为：
+
+```text
+LBM_GEOMETRY_3D nx ny nz
+SLICE 0
+<ny 行等宽字符>
+SLICE 1
+<ny 行等宽字符>
+...
+```
+
+字符仍为 `.`、`#`、`I`、`O`、`P`。切片按求解器 `z` 坐标递增排列，每个
+切片的首行对应物理上边界。当前只支持 `x` 最小端入口和 `x` 最大端出口。
+曲面仍是体素阶梯近似，不包含 STL/CAD 直接解析和插值反弹。
+
+三维示例最终只生成一个动态 SVG，每帧同时显示三个正交中心切片：
+
+```text
+result/d3_lid_driven_cavity_speed_animation.svg
+result/d3_geometry_flow_speed_animation.svg
+result/d3_geometry_displacement_animation.svg
+result/d3_droplet_impact_animation.svg
+```
+
+三维液滴示例用于验证球形界面、撞壁和铺展。当前小网格参数不把整体离壁回弹
+作为默认验收条件；若研究三维回弹，需要进行网格收敛、表面张力标定和动态接触
+角参数扫描，不能只提高人工壁面排斥力。
+
+三维存储量显著增加。仅双缓冲分布函数，D3Q19 单相约为每格 `304 B`；
+D3Q27 两相的四组分布函数约为每格 `864 B`，尚未计入密度、速度、力和固体场。
+因此默认案例使用较小体素域。该扩展仍是等温、低马赫数、弱可压缩模型，不能
+用于高马赫数可压缩流或直接替代三维热流模型。
