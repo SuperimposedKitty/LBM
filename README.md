@@ -14,10 +14,61 @@
 - D3Q27 三维体素两相驱替
 - D3Q27 三维液滴撞击与铺展
 
-所有案例运行完成后都只输出一个 SVG 动态图片，统一写入项目根目录下的 `result` 文件夹。
+所有案例默认按输出间隔保存 OpenFOAM 网格与完整场时间序列，并在计算完成后生成 SVG 动图，统一写入项目根目录下的 `result` 文件夹。
 `result` 与 `src` 同级；程序使用编译期写入的绝对路径，因此从 VSCode 运行或直接双击 exe 都会输出到同一个位置。
 
-## 构建
+## OpenFOAM 格式输出
+
+十个案例均默认启用。运行方式和 `output_interval` 不变，初始步、采样步和最后一步均保存。
+每次运行生成 `result/openfoam/<案例源文件名>/<运行编号>/lbm.foam`；运行编号为微秒时间戳加冲突序号，控制台会打印完整路径。
+从 VSCode 或双击 exe 启动均使用同一项目结果根目录。旧运行保留，不会混入新时间序列。
+
+```text
+result/openfoam/geometry_displacement/<运行编号>/
+  lbm.foam
+  constant/polyMesh/{points,faces,owner,neighbour,boundary}
+  system/controlDict
+  0/{U,p,rho,porosity,rhoA,rhoB,alpha.A,alpha.B,phase,pBulk}
+  300/...
+  600/...
+```
+
+在 ParaView 中打开 `lbm.foam`，点击 Apply，选择场并播放时间序列。三维输出包含全部体素，不限于 SVG 的中心切片。
+
+| 文件 | 含义 |
+| --- | --- |
+| `U` | 三分量混合物速度，二维第三分量为零；速度大小可在 ParaView 选择 Magnitude |
+| `rho`、`p` | 总密度和理想格子压强 `p = rho / 3` |
+| `porosity` | 求解器实际使用的孔隙度；单相 `P` 按普通流体处理，因此为 1 |
+| `rhoA`、`rhoB` | 两相组分密度 |
+| `alpha.A`、`alpha.B` | 密度分数 `rhoA/(rhoA+rhoB)` 和其补数，作为本模型的饱和度代理量 |
+| `phase` | 两相序参量 `(rhoA-rhoB)/(rhoA+rhoB)` |
+| `pBulk` | 两相 Shan–Chen 均匀体相压强近似，详见 LBM.md |
+
+**全部场、坐标和时间均为无量纲格子单位**，文件 `dimensions` 为 `[0 0 0 0 0 0 0]`，时间目录名为计算步数。
+没有隐含的米、秒或帕换算。不同本征密度流体的真实体积饱和度不能直接等同于密度分数；纯相中保留的微量另一组分也不会被强行截成 0 或 1。
+
+固体格点从流体网格中去除，流固界面形成 `walls`。几何入口/出口分别形成 `inlet`/`outlet`，其他外表面为 `outer`；二维前后面为 `empty`。
+这些文件用于后处理，非空场边界采用 `calculated` 并保存邻接单元值，**不是 OpenFOAM 续算案例**，不将周期条件、移动壁面速度、润湿力等转换为有限体积求解边界条件。
+原有 SVG 和显式 CSV/VTK 导出接口仍可使用。场文件在计算过程中写入，故此版本不再仅在结束时生成一个动图；中途停止时已写完的时间步仍可读取。
+
+库调用：初始化后构造一次 writer，网格只写一次，后续快照只写场。目录必须不存在或为空；改变网格需创建新 writer。
+
+```cpp
+lbm::OpenFoamWriter output(lbm::openfoam_result_path("my_case"), solver.openfoam_snapshot());
+output.write(0, solver.openfoam_snapshot());
+solver.step();
+output.write(1, solver.openfoam_snapshot());
+```
+
+实现遵循 OpenFOAM 的 [polyMesh 说明](https://www.openfoam.com/documentation/user-guide/4-mesh-generation-and-conversion/4.1-mesh-description)
+和 [场文件格式](https://www.openfoam.com/documentation/user-guide/2-openfoam-cases/2-2-basic-inputoutput-file-format)。
+
+可选第三方兼容性检查：在安装了 `vtk` 的 Python 环境运行
+`python scripts/validate_openfoam.py result/openfoam`。该脚本实际读取各个时间步，检查网格、场数组和两相分数之和；
+正常编译与运行不需要 Python、VTK 或 OpenFOAM。C++ 自动测试另行验证正体积、面朝向、连通性及原始场值映射。
+
+## 构建与测试
 
 默认编译版本为 `RelWithDebInfo`。
 
@@ -53,7 +104,7 @@ lbm::Solver3DConfig config_3d;
 config_3d.collision_model = lbm::CollisionModel::BGK;
 ```
 
-数值测试不会生成结果文件：
+数值测试不生成仿真结果；OpenFOAM 格式测试在 `build/openfoam_test_output` 下保留小网格验证文件：
 
 ```powershell
 .\scripts\test_vs2022.bat

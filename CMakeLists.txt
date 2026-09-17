@@ -42,6 +42,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(lbm
+    src/openfoam.cpp
     src/collision.cpp
     src/collision3d.cpp
     src/geometry_mask.cpp
@@ -157,6 +158,10 @@ configure_lbm_target(lbm_d3_droplet)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(lbm_openfoam_tests tests/openfoam_output.cpp)
+    target_link_libraries(lbm_openfoam_tests PRIVATE lbm)
+    configure_lbm_target(lbm_openfoam_tests)
+    add_test(NAME lbm_openfoam COMMAND $<TARGET_FILE:lbm_openfoam_tests>)
     add_executable(lbm_numerics_tests tests/lbm_numerics.cpp)
     target_link_libraries(lbm_numerics_tests PRIVATE lbm)
     configure_lbm_target(lbm_numerics_tests)

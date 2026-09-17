@@ -899,4 +899,29 @@ bool TwoPhaseSolver3D::is_outside(int x, int y, int z) const {
     return x < 0 || x >= nx_ || y < 0 || y >= ny_ || z < 0 || z >= nz_;
 }
 
+FoamSnapshot TwoPhaseSolver3D::openfoam_snapshot() const {
+    FoamSnapshot snapshot;
+    snapshot.nx = nx_;
+    snapshot.ny = ny_;
+    snapshot.nz = nz_;
+    snapshot.two_dimensional = false;
+    snapshot.two_phase = true;
+    snapshot.interaction_strength = config_.interaction_strength;
+    snapshot.cells.resize(rho_.size());
+    for (std::size_t i = 0; i < snapshot.cells.size(); ++i) {
+        auto& cell = snapshot.cells[i];
+        cell.solid = solid_[i] != 0;
+        cell.rho = rho_[i];
+        cell.velocity = {velocity_[0][i], velocity_[1][i], velocity_[2][i]};
+        cell.rho_a = rho_a_[i];
+        cell.rho_b = rho_b_[i];
+        cell.porosity = porosity_[i];
+        if (geometry_cells_.size() == snapshot.cells.size()) {
+            cell.boundary = geometry_cells_[i] == GeometryCell::Inlet ? 1 :
+                            (geometry_cells_[i] == GeometryCell::Outlet ? 2 : 0);
+        }
+    }
+    return snapshot;
+}
+
 } // namespace lbm

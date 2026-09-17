@@ -75,11 +75,15 @@ int main() {
     std::vector<std::vector<double>> frames;
     frames.reserve(static_cast<std::size_t>(steps / output_interval + 2));
     frames.push_back(capture_phase(solver));
+    lbm::OpenFoamWriter foam(lbm::openfoam_result_path("capillary_displacement"), solver.openfoam_snapshot());
+    foam.write(0, solver.openfoam_snapshot());
+    std::cout << "OpenFOAM case: " << (foam.directory() / "lbm.foam").string() << '\n';
 
     for (int step = 1; step <= steps; ++step) {
         solver.step();
         if (step % output_interval == 0 || step == steps) {
             frames.push_back(capture_phase(solver));
+            foam.write(step, solver.openfoam_snapshot());
         }
     }
 

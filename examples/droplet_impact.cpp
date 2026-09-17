@@ -127,6 +127,9 @@ int main() {
     std::vector<std::vector<double>> frames;
     frames.reserve(static_cast<std::size_t>(steps / output_interval + 2));
     frames.push_back(capture_phase(solver));
+    lbm::OpenFoamWriter foam(lbm::openfoam_result_path("droplet_impact"), solver.openfoam_snapshot());
+    foam.write(0, solver.openfoam_snapshot());
+    std::cout << "OpenFOAM case: " << (foam.directory() / "lbm.foam").string() << '\n';
 
     std::vector<DropletDiagnosticRecord> diagnostic_records;
     diagnostic_records.reserve(frames.capacity());
@@ -186,6 +189,7 @@ int main() {
         }
         if (step % output_interval == 0 || step == steps) {
             frames.push_back(capture_phase(solver));
+            foam.write(step, solver.openfoam_snapshot());
             record_sample(step, current);
         }
     }

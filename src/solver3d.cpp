@@ -444,4 +444,25 @@ bool Solver3D::is_outside(int x, int y, int z) const {
            z >= grid_.nz;
 }
 
+FoamSnapshot Solver3D::openfoam_snapshot() const {
+    FoamSnapshot snapshot;
+    snapshot.nx = grid_.nx;
+    snapshot.ny = grid_.ny;
+    snapshot.nz = grid_.nz;
+    snapshot.two_dimensional = false;
+    snapshot.two_phase = false;
+    snapshot.cells.resize(grid_.rho.size());
+    for (std::size_t i = 0; i < snapshot.cells.size(); ++i) {
+        auto& cell = snapshot.cells[i];
+        cell.solid = grid_.solid[i] != 0;
+        cell.rho = grid_.rho[i];
+        cell.velocity = {grid_.ux[i], grid_.uy[i], grid_.uz[i]};
+        if (geometry_cells_.size() == snapshot.cells.size()) {
+            cell.boundary = geometry_cells_[i] == GeometryCell::Inlet ? 1 :
+                            (geometry_cells_[i] == GeometryCell::Outlet ? 2 : 0);
+        }
+    }
+    return snapshot;
+}
+
 } // namespace lbm

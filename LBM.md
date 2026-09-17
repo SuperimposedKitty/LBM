@@ -2,6 +2,30 @@
 
 本文档说明本项目中单相和两相格子玻尔兹曼方法的基本原理、代码实现方式和当前案例设置。
 
+## OpenFOAM 后处理数据
+
+四类求解器的 `openfoam_snapshot()` 复制当前宏观场；共用 `OpenFoamWriter` 将其写为 ASCII OpenFOAM 数据。
+不会修改分布函数或执行额外碰撞。二维网格在 z 方向挤出一层，三维输出全部流体体素。
+每个流体格点对应边长为 1 的六面体，中心保留原来的整数格点坐标，面位于半整数位置。
+固体不作为流体单元导出，内部障碍的暴露面组成 `walls`；多孔区域仍是流体单元，用 `porosity` 表示。
+内部面排在边界面之前，owner 编号小于 neighbour，顶点顺序保证法向由 owner 指向 neighbour。
+共用顶点去重，边界按 patch 连续存储。二维前后面为 `empty`，其余场边界用邻接单元值作 `calculated` 后处理值。
+
+所有文件采用无量纲格子单位，时间目录名是整数步数，未提供 SI 单位标定。
+`U` 是求解器宏观混合速度，`rho` 为总密度，`p = cs2 * rho = rho/3` 是理想部分压强。
+两相另存 `pBulk = cs2 * (rho + G * psi(rhoA) * psi(rhoB))`，其中 `psi(rho)=1-exp(-rho)`。
+该式来自对称双组分相互作用的均匀体相状态关系；它不包含界面梯度压力张量、壁面润湿应力或 Darcy 阻力造成的附加项，不能当作完整界面法向应力。
+
+`alpha.A = rhoA/(rhoA+rhoB)`，`alpha.B = 1-alpha.A`，`phase = alpha.A-alpha.B`。
+这里的 alpha 是密度分数，可用于当前近等密度案例的饱和度可视化；未定义各相本征密度时，不宣称它是严格的体积饱和度。
+多孔介质占整个体素的 A 相体积分数代理为 `porosity * alpha.A`，而孔隙内饱和度代理为 `alpha.A`。
+输出不把 `rho_low` 微量组分截断，保留原始计算值。
+
+文件是后处理交换格式，不是将 LBM 转换为 OpenFOAM 有限体积求解器：周期耦合、移动壁面、接触角和驱动力仍由原 LBM 算法负责。
+仅提供用于识别案例的 `system/controlDict`，没有续算用的 `fvSchemes`、`fvSolution` 和材料模型。
+时间序列在每个 `output_interval` 写盘，每次运行使用独立目录，避免积累旧时间步；全场 ASCII 数据比 SVG 切片占用更多磁盘。
+`lbm_openfoam_tests` 检查网格闭合、正体积、面和 patch 索引、二维 empty 面、四类求解器场映射、饱和度和与非法拓扑修改。
+
 ## 1. D2Q9 格子模型
 
 项目采用二维九速度 D2Q9 模型。每个格点存储 9 个分布函数 `f_i`，方向包括 1 个静止方向、4 个轴向方向和 4 个对角方向。方向、权重和反向方向定义在 `include/lbm/lattice.hpp` 中。
@@ -63,7 +87,7 @@ f_i_eq = w_i * rho * (1 + 3 c_i.u + 4.5 (c_i.u)^2 - 1.5 u.u)
 
 顶盖驱动方腔案例把四周设为固体壁面，顶壁以给定速度运动。固壁在迁移阶段使用反弹边界，顶盖额外加入运动壁面动量修正，从而形成经典方腔主涡结构。
 
-两个单相案例最终只输出速度场 SVG 动图：
+两个单相案例输出完整 OpenFOAM 场时间序列，并最终生成速度场 SVG 动图：
 
 ```text
 result/periodic_shear_speed_animation.svg
@@ -231,7 +255,7 @@ result/geometry_displacement_animation.svg
 
 ## 10. 输出和构建约定
 
-项目运行后只输出最终 SVG 动图到源码根目录下的 `result` 文件夹。编译产物按构建类型放置：
+项目按输出间隔保存 OpenFOAM 网格与场数据，并在结束后输出 SVG 动图到源码根目录下的 `result` 文件夹。编译产物按构建类型放置：
 
 ```text
 build/RelWithDebInfo/bin/   exe, dll, pdb
@@ -298,7 +322,7 @@ SLICE 1
 切片的首行对应物理上边界。当前只支持 `x` 最小端入口和 `x` 最大端出口。
 曲面仍是体素阶梯近似，不包含 STL/CAD 直接解析和插值反弹。
 
-三维示例最终只生成一个动态 SVG，每帧同时显示三个正交中心切片：
+三维示例保存完整三维 OpenFOAM 网格与场，并最终生成一个动态 SVG，每帧同时显示三个正交中心切片：
 
 ```text
 result/d3_lid_driven_cavity_speed_animation.svg

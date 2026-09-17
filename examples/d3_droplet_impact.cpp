@@ -55,6 +55,9 @@ int main() {
 
     std::vector<lbm::SliceFrame3D> frames;
     frames.push_back(capture_phase(solver));
+    lbm::OpenFoamWriter foam(lbm::openfoam_result_path("d3_droplet_impact"), solver.openfoam_snapshot());
+    foam.write(0, solver.openfoam_snapshot());
+    std::cout << "OpenFOAM case: " << (foam.directory() / "lbm.foam").string() << '\n';
     double minimum_center_y = before.phase_a_centroid_y;
     double rebound_center_y = minimum_center_y;
     for (int step = 1; step <= steps; ++step) {
@@ -69,6 +72,7 @@ int main() {
         }
         if (step % output_interval == 0 || step == steps) {
             frames.push_back(capture_phase(solver));
+            foam.write(step, solver.openfoam_snapshot());
         }
     }
 

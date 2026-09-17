@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lbm/openfoam.hpp"
+
 #include "lbm/collision3d.hpp"
 #include "lbm/geometry_mask3d.hpp"
 #include "lbm/grid3d.hpp"
@@ -39,6 +41,7 @@ public:
     void run_lid_driven_cavity(int steps, double lid_velocity);
     Diagnostics3D diagnostics() const;
     void write_vtk(const std::string& path) const;
+    FoamSnapshot openfoam_snapshot() const;
 
 private:
     Grid3D grid_;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lbm/openfoam.hpp"
+
 #include "lbm/collision.hpp"
 #include "lbm/geometry_mask.hpp"
 #include "lbm/grid.hpp"
@@ -40,6 +42,7 @@ public:
     Diagnostics diagnostics() const;
     void write_csv(const std::string& path) const;
     void write_vtk(const std::string& path) const;
+    FoamSnapshot openfoam_snapshot() const;
 
 private:
     Grid grid_;

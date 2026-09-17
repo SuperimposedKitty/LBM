@@ -522,4 +522,25 @@ void Solver::compute_macroscopic_masked() {
     }
 }
 
+FoamSnapshot Solver::openfoam_snapshot() const {
+    FoamSnapshot snapshot;
+    snapshot.nx = grid_.nx;
+    snapshot.ny = grid_.ny;
+    snapshot.nz = 1;
+    snapshot.two_dimensional = true;
+    snapshot.two_phase = false;
+    snapshot.cells.resize(grid_.rho.size());
+    for (std::size_t i = 0; i < snapshot.cells.size(); ++i) {
+        auto& cell = snapshot.cells[i];
+        cell.solid = grid_.solid[i] != 0;
+        cell.rho = grid_.rho[i];
+        cell.velocity = {grid_.ux[i], grid_.uy[i], 0.0};
+        if (geometry_cells_.size() == snapshot.cells.size()) {
+            cell.boundary = geometry_cells_[i] == GeometryCell::Inlet ? 1 :
+                            (geometry_cells_[i] == GeometryCell::Outlet ? 2 : 0);
+        }
+    }
+    return snapshot;
+}
+
 } // namespace lbm

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lbm/openfoam.hpp"
+
 #include "lbm/collision3d.hpp"
 #include "lbm/geometry_mask3d.hpp"
 
@@ -77,6 +79,7 @@ public:
     void run_closed(int steps);
     TwoPhaseDiagnostics3D diagnostics() const;
     void write_vtk(const std::string& path) const;
+    FoamSnapshot openfoam_snapshot() const;
 
 private:
     int nx_{};

@@ -912,4 +912,33 @@ bool TwoPhaseSolver::is_outside(int x, int y) const {
     return x < 0 || x >= nx_ || y < 0 || y >= ny_;
 }
 
+FoamSnapshot TwoPhaseSolver::openfoam_snapshot() const {
+    FoamSnapshot snapshot;
+    snapshot.nx = nx_;
+    snapshot.ny = ny_;
+    snapshot.nz = 1;
+    snapshot.two_dimensional = true;
+    snapshot.two_phase = true;
+    snapshot.interaction_strength = config_.interaction_strength;
+    snapshot.cells.resize(rho_.size());
+    for (std::size_t i = 0; i < snapshot.cells.size(); ++i) {
+        auto& cell = snapshot.cells[i];
+        cell.solid = solid_[i] != 0;
+        cell.rho = rho_[i];
+        cell.velocity = {ux_[i], uy_[i], 0.0};
+        cell.rho_a = rho_a_[i];
+        cell.rho_b = rho_b_[i];
+        cell.porosity = porosity_[i];
+        if (geometry_cells_.size() == snapshot.cells.size()) {
+            cell.boundary = geometry_cells_[i] == GeometryCell::Inlet ? 1 :
+                            (geometry_cells_[i] == GeometryCell::Outlet ? 2 : 0);
+        } else if (!cell.solid) {
+            // 细管两端为开放边界；封闭液滴案例在这两列均为固体。
+            const auto x = i % static_cast<std::size_t>(nx_);
+            cell.boundary = x == 0 ? 1 : (x == static_cast<std::size_t>(nx_ - 1) ? 2 : 0);
+        }
+    }
+    return snapshot;
+}
+
 } // namespace lbm
