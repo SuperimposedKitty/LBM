@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "D2Q9 Periodic Shear",
-      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_periodic.exe",
+      "program": "${workspaceFolder}/bin/lbm_periodic.exe",
       "type": "cppvsdbg",
       "request": "launch",
       "args": [],
@@ -14,7 +14,7 @@
     },
     {
       "name": "Lid Driven Cavity",
-      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_cavity.exe",
+      "program": "${workspaceFolder}/bin/lbm_cavity.exe",
       "type": "cppvsdbg",
       "request": "launch",
       "args": [],
@@ -25,7 +25,7 @@
     },
     {
       "name": "Capillary Displacement",
-      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_capillary.exe",
+      "program": "${workspaceFolder}/bin/lbm_capillary.exe",
       "type": "cppvsdbg",
       "request": "launch",
       "args": [],
@@ -36,7 +36,7 @@
     },
     {
       "name": "Droplet Impact",
-      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_droplet.exe",
+      "program": "${workspaceFolder}/bin/lbm_droplet.exe",
       "type": "cppvsdbg",
       "request": "launch",
       "args": [],
@@ -47,7 +47,7 @@
     },
     {
       "name": "Imported Geometry Flow",
-      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_geometry_flow.exe",
+      "program": "${workspaceFolder}/bin/lbm_geometry_flow.exe",
       "type": "cppvsdbg",
       "request": "launch",
       "args": [],
@@ -58,7 +58,7 @@
     },
     {
       "name": "Imported Geometry Displacement",
-      "program": "${workspaceFolder}/build/RelWithDebInfo/bin/lbm_geometry_displacement.exe",
+      "program": "${workspaceFolder}/bin/lbm_geometry_displacement.exe",
       "type": "cppvsdbg",
       "request": "launch",
       "args": [],

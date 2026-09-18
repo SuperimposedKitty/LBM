@@ -45,7 +45,7 @@ private:
     void validate(const FoamSnapshot& snapshot) const;
 };
 
-// 每次运行创建独立目录，避免旧时间步混入新计算，也不删除既有结果。
+// 返回固定案例目录；构造 writer 时清理上次由本导出器登记的时间步。
 std::filesystem::path openfoam_result_path(const char* case_name);
 
 } // namespace lbm

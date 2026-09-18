@@ -169,6 +169,32 @@ int main() {
         }
         obstacle.cells[5].solid=true;
         check("obstacle",obstacle);
+        // 重跑使用同一目录，较短的新计算不能残留旧时间步或旧两相场。
+        const auto repeat = base / "overwrite";
+        std::filesystem::create_directories(repeat / "old_run_0");
+        { std::ofstream note(repeat / "notes.txt"); note << "keep"; }
+        { std::ofstream legacy(repeat / "old_run_0" / "archive.txt"); }
+        {
+            lbm::OpenFoamWriter writer(repeat,obstacle);
+            writer.write(0,obstacle); writer.write(100,obstacle);
+        }
+        auto replacement=flow.openfoam_snapshot();
+        {
+            lbm::OpenFoamWriter writer(repeat,replacement);
+            require(!std::filesystem::exists(repeat / "100"),"Old time survived overwrite");
+            writer.write(0,replacement); writer.write(5,replacement);
+        }
+        require(!std::filesystem::exists(repeat / "0" / "alpha.A"),"Old phase field survived overwrite");
+        require(read(repeat / "notes.txt")=="keep","User file deleted");
+        require(std::filesystem::exists(repeat / "old_run_0" / "archive.txt"),"Legacy run deleted");
+        verify(repeat,replacement);
+        require(lbm::openfoam_result_path("test_case").filename()=="test_case","Run suffix remains");
+        { std::ofstream note(repeat / "5" / "user.txt"); note << "keep"; }
+        bool refused=false;
+        try { lbm::OpenFoamWriter writer(repeat,replacement); }
+        catch (const std::runtime_error&) { refused=true; }
+        require(refused,"Unknown time file removed");
+        require(std::filesystem::exists(repeat / "0" / "U"),"Cleanup occurred before preflight");
         std::cout << "OpenFOAM topology, volumes, fields, snapshots and validation passed: " << base << '\n';
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

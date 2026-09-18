@@ -11,11 +11,13 @@ def validate(marker):
     reader = vtkOpenFOAMReader()
     reader.AddObserver("ErrorEvent", lambda *_: errors.append("VTK reader error"))
     reader.SetFileName(str(marker.resolve()))
+    reader.SetSkipZeroTime(0)
     reader.UpdateInformation()
     for index in range(reader.GetNumberOfCellArrays()):
         reader.SetCellArrayStatus(reader.GetCellArrayName(index), 1)
     times = reader.GetTimeValues()
     assert times is not None and times.GetNumberOfValues() > 0, marker
+    assert times.GetValue(0) == 0, (marker, "Missing initial time")
     count = None
     for index in range(times.GetNumberOfValues()):
         time = times.GetValue(index)

@@ -14,17 +14,18 @@
 - D3Q27 三维体素两相驱替
 - D3Q27 三维液滴撞击与铺展
 
-所有案例默认按输出间隔保存 OpenFOAM 网格与完整场时间序列，并在计算完成后生成 SVG 动图，统一写入项目根目录下的 `result` 文件夹。
+所有案例仅按输出间隔保存 OpenFOAM 网格与完整场时间序列，不再生成 SVG，统一写入项目根目录下的 `result` 文件夹。
 `result` 与 `src` 同级；程序使用编译期写入的绝对路径，因此从 VSCode 运行或直接双击 exe 都会输出到同一个位置。
 
 ## OpenFOAM 格式输出
 
 十个案例均默认启用。运行方式和 `output_interval` 不变，初始步、采样步和最后一步均保存。
-每次运行生成 `result/openfoam/<案例源文件名>/<运行编号>/lbm.foam`；运行编号为微秒时间戳加冲突序号，控制台会打印完整路径。
-从 VSCode 或双击 exe 启动均使用同一项目结果根目录。旧运行保留，不会混入新时间序列。
+每次运行生成 `result/openfoam/<案例源文件名>/lbm.foam`，控制台会打印完整路径。
+从 VSCode 或双击 exe 启动均使用同一项目结果根目录。同一案例重跑会覆盖网格并清理上次登记的时间步，因此缩短计算时间也不会混入旧帧。
+不要同时运行同一个案例的多个进程。旧版本的运行编号子目录保留，但新结果不再写入其中。
 
 ```text
-result/openfoam/geometry_displacement/<运行编号>/
+result/openfoam/geometry_displacement/
   lbm.foam
   constant/polyMesh/{points,faces,owner,neighbour,boundary}
   system/controlDict
@@ -33,7 +34,12 @@ result/openfoam/geometry_displacement/<运行编号>/
   600/...
 ```
 
-在 ParaView 中打开 `lbm.foam`，点击 Apply，选择场并播放时间序列。三维输出包含全部体素，不限于 SVG 的中心切片。
+在 ParaView 中打开 `lbm.foam`，点击 Apply，选择场并播放时间序列。三维输出包含全部体素，可在 ParaView 中查看切片或等值面。
+
+**查看 0 时刻：**选中原始 `lbm.foam` 读取器，在 Properties 搜索 `Skip Zero Time`（必要时开启齿轮高级选项），取消勾选并 Apply。
+该选项会忽略整个 `0/` 目录，并非求解器没有保存初始场。如果时间仍从第一个采样步开始，点击读取器的 Refresh/Refresh Times；仍不更新时删除该数据源并重新打开，首次 Apply 前取消勾选该选项。
+更新后跳到第一帧，时间应为 0。输出文件不能控制 ParaView 客户端的 `Skip Zero Time` 偏好设置。
+同一案例重新计算后，也需要刷新或重新打开读取器，避免显示旧网格或缓存场。
 
 | 文件 | 含义 |
 | --- | --- |
@@ -50,9 +56,11 @@ result/openfoam/geometry_displacement/<运行编号>/
 
 固体格点从流体网格中去除，流固界面形成 `walls`。几何入口/出口分别形成 `inlet`/`outlet`，其他外表面为 `outer`；二维前后面为 `empty`。
 这些文件用于后处理，非空场边界采用 `calculated` 并保存邻接单元值，**不是 OpenFOAM 续算案例**，不将周期条件、移动壁面速度、润湿力等转换为有限体积求解边界条件。
-原有 SVG 和显式 CSV/VTK 导出接口仍可使用。场文件在计算过程中写入，故此版本不再仅在结束时生成一个动图；中途停止时已写完的时间步仍可读取。
+案例不再生成 SVG，也不缓存用于 SVG 渲染的动画帧。显式 CSV/VTK 和 SVG 库接口仍保留供自定义调用。场文件在计算过程中写入，中途停止时已写完的时间步仍可读取；历史 SVG 文件不会被自动删除。
 
-库调用：初始化后构造一次 writer，网格只写一次，后续快照只写场。目录必须不存在或为空；改变网格需创建新 writer。
+库调用：初始化后构造一次 writer，网格只写一次，后续快照只写场。改变网格或重跑时重新构造 writer。
+导出器用 `.lbm-times` 登记自己生成的时间步，重跑仅逐文件清理这些时间目录中的已知场文件；不会递归删除案例目录。
+案例根目录的用户文件保留。若旧时间目录含未知文件，程序报错而不删除；没有导出器清单的既有网格或时间目录也不会直接覆盖。
 
 ```cpp
 lbm::OpenFoamWriter output(lbm::openfoam_result_path("my_case"), solver.openfoam_snapshot());
@@ -86,9 +94,11 @@ cmake --build build --config RelWithDebInfo
 编译产物目录统一为：
 
 ```text
-build/RelWithDebInfo/bin/   exe, dll, pdb
-build/RelWithDebInfo/lib/   lib, exp
+bin/                      exe, dll, pdb
+lib/   lib, exp
 ```
+
+所有编译版本共用项目根目录的 `bin/` 和 `lib/`，不会创建版本子目录。切换编译版本时建议使用 `cmake --build build --config Debug --clean-first` 等方式完整重建，避免复用另一个版本的同名程序。
 
 默认碰撞模型为 MRT。原有 D2Q9 构造函数和时间步接口不变；三维通过
 `Solver3D`、`TwoPhaseSolver3D` 和独立配置新增。需要切回 BGK 时，可在相应配置中设置：
@@ -113,49 +123,49 @@ config_3d.collision_model = lbm::CollisionModel::BGK;
 ## 运行
 
 ```powershell
-.\build\RelWithDebInfo\bin\lbm_periodic.exe
-.\build\RelWithDebInfo\bin\lbm_cavity.exe
-.\build\RelWithDebInfo\bin\lbm_capillary.exe
-.\build\RelWithDebInfo\bin\lbm_droplet.exe
-.\build\RelWithDebInfo\bin\lbm_geometry_flow.exe
-.\build\RelWithDebInfo\bin\lbm_geometry_displacement.exe
-.\build\RelWithDebInfo\bin\lbm_d3_cavity.exe
-.\build\RelWithDebInfo\bin\lbm_d3_geometry_flow.exe
-.\build\RelWithDebInfo\bin\lbm_d3_geometry_displacement.exe
-.\build\RelWithDebInfo\bin\lbm_d3_droplet.exe
+.\bin\lbm_periodic.exe
+.\bin\lbm_cavity.exe
+.\bin\lbm_capillary.exe
+.\bin\lbm_droplet.exe
+.\bin\lbm_geometry_flow.exe
+.\bin\lbm_geometry_displacement.exe
+.\bin\lbm_d3_cavity.exe
+.\bin\lbm_d3_geometry_flow.exe
+.\bin\lbm_d3_geometry_displacement.exe
+.\bin\lbm_d3_droplet.exe
 ```
 
 输出文件：
 
 ```text
-result/periodic_shear_speed_animation.svg
-result/lid_driven_cavity_speed_animation.svg
-result/capillary_phase_animation.svg
-result/droplet_impact_animation.svg
-result/geometry_flow_speed_animation.svg
-result/geometry_displacement_animation.svg
-result/d3_lid_driven_cavity_speed_animation.svg
-result/d3_geometry_flow_speed_animation.svg
-result/d3_geometry_displacement_animation.svg
-result/d3_droplet_impact_animation.svg
+result/openfoam/periodic_shear/lbm.foam
+result/openfoam/lid_driven_cavity/lbm.foam
+result/openfoam/capillary_displacement/lbm.foam
+result/openfoam/droplet_impact/lbm.foam
+result/openfoam/geometry_flow/lbm.foam
+result/openfoam/geometry_displacement/lbm.foam
+result/openfoam/d3_lid_driven_cavity/lbm.foam
+result/openfoam/d3_geometry_flow/lbm.foam
+result/openfoam/d3_geometry_displacement/lbm.foam
+result/openfoam/d3_droplet_impact/lbm.foam
 ```
 
-颜色说明：
+ParaView 显示建议（颜色由所选色带决定）：
 
-- 周期剪切波和顶盖驱动方腔：颜色表示速度大小，深灰表示固壁。
-- 细管两相驱替：红色为注入相，蓝色为被驱替相，深灰为固壁。
-- 液滴撞击：红色为液滴相，蓝色为环境相，黄色为两相界面，深灰为固壁。
-- 导入几何单相流：颜色表示速度，深灰表示文件中定义的障碍物。
-- 导入几何两相驱替：红色为注入相，蓝色为被驱替相，斜线区域为多孔介质。
-- 三维案例在一个动态 SVG 中同时显示 `XY`、`XZ`、`YZ` 三个中心切片。
+- 单相案例：选择 `U` 的 Magnitude 查看流速。
+- 细管两相驱替：选择 `alpha.A`，范围固定为 0 到 1。
+- 液滴撞击：选择 `alpha.A` 或 `phase` 观察界面。
+- 固体障碍：显示 `walls` 边界。
+- 多孔介质：用 `porosity` 查看区域分布。
+- 三维案例：在 ParaView 中添加 Slice 查看 XY、XZ 或 YZ 截面。
 
 ## 几何文件
 
 几何案例默认读取 `geometry/channel_obstacle.geom`。也可以在命令行传入其他文件：
 
 ```powershell
-.\build\RelWithDebInfo\bin\lbm_geometry_flow.exe .\geometry\channel_obstacle.geom
-.\build\RelWithDebInfo\bin\lbm_geometry_displacement.exe .\geometry\channel_obstacle.geom
+.\bin\lbm_geometry_flow.exe .\geometry\channel_obstacle.geom
+.\bin\lbm_geometry_displacement.exe .\geometry\channel_obstacle.geom
 ```
 
 `.geom` 是等宽字符网格。文件第一行对应物理上边界，最后一行对应物理下边界；空行会被忽略。
@@ -188,8 +198,8 @@ I.............PPPPP....O
 `x = nx - 1`。三维默认文件为 `geometry/channel_obstacle.geom3d`：
 
 ```powershell
-.\build\RelWithDebInfo\bin\lbm_d3_geometry_flow.exe .\geometry\channel_obstacle.geom3d
-.\build\RelWithDebInfo\bin\lbm_d3_geometry_displacement.exe .\geometry\channel_obstacle.geom3d
+.\bin\lbm_d3_geometry_flow.exe .\geometry\channel_obstacle.geom3d
+.\bin\lbm_d3_geometry_displacement.exe .\geometry\channel_obstacle.geom3d
 ```
 
 ## VSCode

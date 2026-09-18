@@ -1,5 +1,7 @@
 # Build artifacts
 /build*/
+/bin/
+/lib/
 
 # Generated simulation results
 /result/

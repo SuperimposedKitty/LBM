@@ -1,24 +1,8 @@
-#include "lbm/svg_slice_animation3d.hpp"
 #include "lbm/two_phase_solver3d.hpp"
 
 #include <algorithm>
 #include <iostream>
-#include <vector>
-
-namespace {
-
-lbm::SliceFrame3D capture_phase(const lbm::TwoPhaseSolver3D& solver) {
-    return lbm::capture_orthogonal_slices(
-        solver.nx(),
-        solver.ny(),
-        solver.nz(),
-        solver.nx() / 2,
-        solver.ny() / 2,
-        solver.nz() / 2,
-        [&solver](int x, int y, int z) { return solver.phase_at(x, y, z); });
-}
-
-} // namespace
+#include <stdexcept>
 
 int main() {
     constexpr int nx = 24;
@@ -53,8 +37,6 @@ int main() {
         0.0);
     const auto before = solver.diagnostics();
 
-    std::vector<lbm::SliceFrame3D> frames;
-    frames.push_back(capture_phase(solver));
     lbm::OpenFoamWriter foam(lbm::openfoam_result_path("d3_droplet_impact"), solver.openfoam_snapshot());
     foam.write(0, solver.openfoam_snapshot());
     std::cout << "OpenFOAM case: " << (foam.directory() / "lbm.foam").string() << '\n';
@@ -71,35 +53,10 @@ int main() {
                 std::max(rebound_center_y, current.phase_a_centroid_y);
         }
         if (step % output_interval == 0 || step == steps) {
-            frames.push_back(capture_phase(solver));
             foam.write(step, solver.openfoam_snapshot());
         }
     }
 
-    const lbm::SliceMasks3D masks = lbm::capture_orthogonal_masks(
-        nx,
-        ny,
-        nz,
-        nx / 2,
-        ny / 2,
-        nz / 2,
-        [&solver](int x, int y, int z) { return solver.solid_at(x, y, z); },
-        [&solver](int x, int y, int z) {
-            return solver.porosity_at(x, y, z);
-        });
-    lbm::ScalarAnimationOptions animation;
-    animation.cell = 6;
-    animation.fps = 10.0;
-    animation.title = "D3Q27 MRT droplet impact and spreading";
-    animation.footer =
-        "Red: droplet; blue: ambient phase; yellow: interface; gray: solid.";
-    animation.color_map = lbm::ColorMap::PhaseHighContrast;
-    animation.fixed_range = true;
-    animation.vmin = -1.0;
-    animation.vmax = 1.0;
-    const auto path = lbm::result_path("d3_droplet_impact_animation.svg");
-    lbm::write_orthogonal_slice_animation_svg(
-        path, frames, masks, nx, ny, nz, animation);
 
     const auto after = solver.diagnostics();
     std::cout << "D3Q27 MRT droplet impact\n";
@@ -109,6 +66,5 @@ int main() {
     std::cout << "maximum rebound height: "
               << rebound_center_y - minimum_center_y << '\n';
     std::cout << "final max speed: " << after.max_speed << '\n';
-    std::cout << "wrote: " << path.string() << '\n';
     return 0;
 }

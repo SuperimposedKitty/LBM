@@ -23,7 +23,8 @@
 
 文件是后处理交换格式，不是将 LBM 转换为 OpenFOAM 有限体积求解器：周期耦合、移动壁面、接触角和驱动力仍由原 LBM 算法负责。
 仅提供用于识别案例的 `system/controlDict`，没有续算用的 `fvSchemes`、`fvSolution` 和材料模型。
-时间序列在每个 `output_interval` 写盘，每次运行使用独立目录，避免积累旧时间步；全场 ASCII 数据比 SVG 切片占用更多磁盘。
+时间序列在每个 `output_interval` 写盘，固定保存到 `result/openfoam/<案例名>`。重跑时按 `.lbm-times` 清单清理已知场和旧时间目录，再覆盖网格，避免积累旧帧；全场 ASCII 数据比 SVG 切片占用更多磁盘。
+`0/` 保存真实初始场。ParaView 的 `Skip Zero Time` 会隐藏该目录，需取消勾选后刷新读取器时间列表，必要时重新打开案例。
 `lbm_openfoam_tests` 检查网格闭合、正体积、面和 patch 索引、二维 empty 面、四类求解器场映射、饱和度和与非法拓扑修改。
 
 ## 1. D2Q9 格子模型
@@ -87,11 +88,11 @@ f_i_eq = w_i * rho * (1 + 3 c_i.u + 4.5 (c_i.u)^2 - 1.5 u.u)
 
 顶盖驱动方腔案例把四周设为固体壁面，顶壁以给定速度运动。固壁在迁移阶段使用反弹边界，顶盖额外加入运动壁面动量修正，从而形成经典方腔主涡结构。
 
-两个单相案例输出完整 OpenFOAM 场时间序列，并最终生成速度场 SVG 动图：
+两个单相案例仅输出完整 OpenFOAM 场时间序列：
 
 ```text
-result/periodic_shear_speed_animation.svg
-result/lid_driven_cavity_speed_animation.svg
+result/openfoam/periodic_shear/lbm.foam
+result/openfoam/lid_driven_cavity/lbm.foam
 ```
 
 ## 4. 两相 Shan-Chen 模型
@@ -191,14 +192,14 @@ u_pore = u / epsilon
 该案例输出：
 
 ```text
-result/droplet_impact_animation.svg
+result/openfoam/droplet_impact/lbm.foam
 ```
 
 控制台会输出液滴 A 相质心的初始高度、最低高度和最终高度。`final droplet center y - minimum droplet center y` 为正时，说明在计算后段出现了回弹趋势。
 
 ## 8. 两相可视化
 
-两相动图输出的是相场：
+OpenFOAM 的 `phase` 字段保存相场：
 
 ```text
 phi = (rho_a - rho_b) / rho
@@ -212,17 +213,17 @@ phi -> -1：蓝色被驱替相占优
 phi ->  0：两相界面
 ```
 
-之前界面看起来发白，是因为相场色带把 `phi = 0` 映射到接近白色的中间颜色。现在色带改为蓝-黄-红，界面附近用黄色显示，更容易从红蓝两相中辨认出来。
+界面的显示颜色由 ParaView 色带决定。例如选择蓝-黄-红色带，可将 `phi = 0` 的界面显示为黄色。程序不再生成带预设色带的 SVG。
 
 两相案例最终输出：
 
 ```text
-result/capillary_phase_animation.svg
-result/droplet_impact_animation.svg
-result/geometry_displacement_animation.svg
+result/openfoam/capillary_displacement/lbm.foam
+result/openfoam/droplet_impact/lbm.foam
+result/openfoam/geometry_displacement/lbm.foam
 ```
 
-细管中间的多孔介质区域会在动图上叠加斜线纹理，底色仍然保留相场颜色。
+细管中间的多孔介质区域用 `porosity` 字段标记，在 ParaView 中可单独着色显示。
 
 ## 9. 几何掩膜导入与边界条件
 
@@ -247,19 +248,19 @@ P：体积平均多孔流体单元
 默认几何 `geometry/channel_obstacle.geom` 同时包含菱形固体障碍和孔隙度 `0.3` 的多孔区域。对应输出为：
 
 ```text
-result/geometry_flow_speed_animation.svg
-result/geometry_displacement_animation.svg
+result/openfoam/geometry_flow/lbm.foam
+result/openfoam/geometry_displacement/lbm.foam
 ```
 
 当前边界是格点级阶梯近似，不包含 STL/CAD 曲面、插值反弹或子网格曲率修正。需要提高曲线精度时，应增加几何网格分辨率并重新标记单元。
 
 ## 10. 输出和构建约定
 
-项目按输出间隔保存 OpenFOAM 网格与场数据，并在结束后输出 SVG 动图到源码根目录下的 `result` 文件夹。编译产物按构建类型放置：
+项目仅按输出间隔保存 OpenFOAM 网格与场数据到源码根目录下的 `result` 文件夹。可执行程序及 DLL/PDB 放到根目录 `bin`，LIB/EXP 放到同级 `lib`，均不加构建版本子目录：
 
 ```text
-build/RelWithDebInfo/bin/   exe, dll, pdb
-build/RelWithDebInfo/lib/   lib, exp
+bin/                      exe, dll, pdb
+lib/   lib, exp
 ```
 
 默认构建类型是 `RelWithDebInfo`，推荐使用：
@@ -322,13 +323,13 @@ SLICE 1
 切片的首行对应物理上边界。当前只支持 `x` 最小端入口和 `x` 最大端出口。
 曲面仍是体素阶梯近似，不包含 STL/CAD 直接解析和插值反弹。
 
-三维示例保存完整三维 OpenFOAM 网格与场，并最终生成一个动态 SVG，每帧同时显示三个正交中心切片：
+三维示例仅保存完整三维 OpenFOAM 网格与场，使用 ParaView 查看时间序列：
 
 ```text
-result/d3_lid_driven_cavity_speed_animation.svg
-result/d3_geometry_flow_speed_animation.svg
-result/d3_geometry_displacement_animation.svg
-result/d3_droplet_impact_animation.svg
+result/openfoam/d3_lid_driven_cavity/lbm.foam
+result/openfoam/d3_geometry_flow/lbm.foam
+result/openfoam/d3_geometry_displacement/lbm.foam
+result/openfoam/d3_droplet_impact/lbm.foam
 ```
 
 三维液滴示例用于验证球形界面、撞壁和铺展。当前小网格参数不把整体离壁回弹

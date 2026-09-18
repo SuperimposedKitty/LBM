@@ -15,23 +15,23 @@ function(configure_lbm_output_directories)
         foreach(config ${CMAKE_CONFIGURATION_TYPES})
             string(TOUPPER "${config}" config_upper)
             set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${config_upper}
-                "${CMAKE_BINARY_DIR}/${config}/bin" PARENT_SCOPE)
+                "${PROJECT_SOURCE_DIR}/bin" PARENT_SCOPE)
             set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${config_upper}
-                "${CMAKE_BINARY_DIR}/${config}/bin" PARENT_SCOPE)
+                "${PROJECT_SOURCE_DIR}/bin" PARENT_SCOPE)
             set(CMAKE_PDB_OUTPUT_DIRECTORY_${config_upper}
-                "${CMAKE_BINARY_DIR}/${config}/bin" PARENT_SCOPE)
+                "${PROJECT_SOURCE_DIR}/bin" PARENT_SCOPE)
             set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${config_upper}
-                "${CMAKE_BINARY_DIR}/${config}/lib" PARENT_SCOPE)
+                "${PROJECT_SOURCE_DIR}/lib" PARENT_SCOPE)
         endforeach()
     else()
         set(CMAKE_RUNTIME_OUTPUT_DIRECTORY
-            "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin" PARENT_SCOPE)
+            "${PROJECT_SOURCE_DIR}/bin" PARENT_SCOPE)
         set(CMAKE_LIBRARY_OUTPUT_DIRECTORY
-            "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin" PARENT_SCOPE)
+            "${PROJECT_SOURCE_DIR}/bin" PARENT_SCOPE)
         set(CMAKE_PDB_OUTPUT_DIRECTORY
-            "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin" PARENT_SCOPE)
+            "${PROJECT_SOURCE_DIR}/bin" PARENT_SCOPE)
         set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY
-            "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/lib" PARENT_SCOPE)
+            "${PROJECT_SOURCE_DIR}/lib" PARENT_SCOPE)
     endif()
 endfunction()
 
@@ -74,23 +74,23 @@ function(configure_lbm_target target_name)
             string(TOUPPER "${config}" config_upper)
             set_target_properties(${target_name}
                 PROPERTIES
-                    RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/${config}/bin"
-                    LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/${config}/bin"
-                    PDB_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/${config}/bin"
-                    COMPILE_PDB_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/${config}/bin"
+                    RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${PROJECT_SOURCE_DIR}/bin"
+                    LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${PROJECT_SOURCE_DIR}/bin"
+                    PDB_OUTPUT_DIRECTORY_${config_upper} "${PROJECT_SOURCE_DIR}/bin"
+                    COMPILE_PDB_OUTPUT_DIRECTORY_${config_upper} "${PROJECT_SOURCE_DIR}/bin"
                     COMPILE_PDB_NAME_${config_upper} "${target_name}_compile"
-                    ARCHIVE_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/${config}/lib"
+                    ARCHIVE_OUTPUT_DIRECTORY_${config_upper} "${PROJECT_SOURCE_DIR}/lib"
             )
         endforeach()
     else()
         set_target_properties(${target_name}
             PROPERTIES
-                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin"
-                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin"
-                PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin"
-                COMPILE_PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/bin"
+                RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin"
+                LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin"
+                PDB_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin"
+                COMPILE_PDB_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin"
                 COMPILE_PDB_NAME "${target_name}_compile"
-                ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_BUILD_TYPE}/lib"
+                ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/lib"
         )
     endif()
 
@@ -101,7 +101,7 @@ function(configure_lbm_target target_name)
                 POST_BUILD
                 COMMAND "${CMAKE_COMMAND}"
                     -Dsrc="$<TARGET_FILE_DIR:${target_name}>/${target_name}.pdb"
-                    -Ddst="${CMAKE_BINARY_DIR}/$<CONFIG>/bin/${target_name}.pdb"
+                    -Ddst="${PROJECT_SOURCE_DIR}/bin/${target_name}.pdb"
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/move_if_exists.cmake"
             )
         endif()

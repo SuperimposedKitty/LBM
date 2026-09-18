@@ -31,4 +31,4 @@ if exist build\CMakeCache.txt (
 if errorlevel 1 exit /b %errorlevel%
 
 echo.
-echo Build completed. Run executables under build\RelWithDebInfo\bin\
+echo Build completed. Run executables under bin\

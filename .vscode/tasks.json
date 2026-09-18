@@ -51,7 +51,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_periodic.exe'; if (-not (Test-Path $exe)) { throw 'lbm_periodic executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_periodic.exe'; if (-not (Test-Path $exe)) { throw 'lbm_periodic executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -65,7 +65,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_cavity.exe'; if (-not (Test-Path $exe)) { throw 'lbm_cavity executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_cavity.exe'; if (-not (Test-Path $exe)) { throw 'lbm_cavity executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -79,7 +79,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_capillary.exe'; if (-not (Test-Path $exe)) { throw 'lbm_capillary executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_capillary.exe'; if (-not (Test-Path $exe)) { throw 'lbm_capillary executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -93,7 +93,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_droplet.exe'; if (-not (Test-Path $exe)) { throw 'lbm_droplet executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_droplet.exe'; if (-not (Test-Path $exe)) { throw 'lbm_droplet executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -107,7 +107,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_geometry_flow.exe'; if (-not (Test-Path $exe)) { throw 'lbm_geometry_flow executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_geometry_flow.exe'; if (-not (Test-Path $exe)) { throw 'lbm_geometry_flow executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -121,7 +121,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_geometry_displacement.exe'; if (-not (Test-Path $exe)) { throw 'lbm_geometry_displacement executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_geometry_displacement.exe'; if (-not (Test-Path $exe)) { throw 'lbm_geometry_displacement executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -135,7 +135,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_d3_cavity.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_cavity executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_d3_cavity.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_cavity executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -149,7 +149,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_d3_geometry_flow.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_geometry_flow executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_d3_geometry_flow.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_geometry_flow executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -163,7 +163,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_d3_geometry_displacement.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_geometry_displacement executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_d3_geometry_displacement.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_geometry_displacement executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []
@@ -177,7 +177,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$exe = 'build/RelWithDebInfo/bin/lbm_d3_droplet.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_droplet executable was not found. Run the VS2022 Build task first.' }; & $exe"
+        "$exe = 'bin/lbm_d3_droplet.exe'; if (-not (Test-Path $exe)) { throw 'lbm_d3_droplet executable was not found. Run the VS2022 Build task first.' }; & $exe"
       ],
       "dependsOn": "VS2022 Build",
       "problemMatcher": []

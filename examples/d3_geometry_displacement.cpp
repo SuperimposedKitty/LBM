@@ -1,26 +1,10 @@
 #include "lbm/geometry_mask.hpp"
 #include "lbm/geometry_mask3d.hpp"
-#include "lbm/svg_slice_animation3d.hpp"
 #include "lbm/two_phase_solver3d.hpp"
 
 #include <filesystem>
 #include <iostream>
-#include <vector>
-
-namespace {
-
-lbm::SliceFrame3D capture_phase(const lbm::TwoPhaseSolver3D& solver) {
-    return lbm::capture_orthogonal_slices(
-        solver.nx(),
-        solver.ny(),
-        solver.nz(),
-        solver.nx() / 2,
-        solver.ny() / 2,
-        solver.nz() / 2,
-        [&solver](int x, int y, int z) { return solver.phase_at(x, y, z); });
-}
-
-} // namespace
+#include <stdexcept>
 
 int main(int argc, char** argv) {
     try {
@@ -48,52 +32,16 @@ int main(int argc, char** argv) {
         solver.initialize_geometry_displacement(mask);
         const auto before = solver.diagnostics();
 
-        std::vector<lbm::SliceFrame3D> frames;
-        frames.push_back(capture_phase(solver));
         lbm::OpenFoamWriter foam(lbm::openfoam_result_path("d3_geometry_displacement"), solver.openfoam_snapshot());
         foam.write(0, solver.openfoam_snapshot());
         std::cout << "OpenFOAM case: " << (foam.directory() / "lbm.foam").string() << '\n';
         for (int step = 1; step <= steps; ++step) {
             solver.step();
             if (step % output_interval == 0 || step == steps) {
-                frames.push_back(capture_phase(solver));
                 foam.write(step, solver.openfoam_snapshot());
             }
         }
 
-        const lbm::SliceMasks3D masks = lbm::capture_orthogonal_masks(
-            solver.nx(),
-            solver.ny(),
-            solver.nz(),
-            solver.nx() / 2,
-            solver.ny() / 2,
-            solver.nz() / 2,
-            [&solver](int x, int y, int z) {
-                return solver.solid_at(x, y, z);
-            },
-            [&solver](int x, int y, int z) {
-                return solver.porosity_at(x, y, z);
-            });
-        lbm::ScalarAnimationOptions animation;
-        animation.cell = 6;
-        animation.fps = 9.0;
-        animation.title = "D3Q27 MRT imported-geometry displacement";
-        animation.footer =
-            "Red: injected A; blue: displaced B; gray: solid; hatched: porous.";
-        animation.color_map = lbm::ColorMap::Phase;
-        animation.fixed_range = true;
-        animation.vmin = -1.0;
-        animation.vmax = 1.0;
-        const auto path =
-            lbm::result_path("d3_geometry_displacement_animation.svg");
-        lbm::write_orthogonal_slice_animation_svg(
-            path,
-            frames,
-            masks,
-            solver.nx(),
-            solver.ny(),
-            solver.nz(),
-            animation);
 
         const auto after = solver.diagnostics();
         std::cout << "D3Q27 imported-geometry two-phase displacement\n";
@@ -104,7 +52,6 @@ int main(int argc, char** argv) {
         std::cout << "final max speed: " << after.max_speed << '\n';
         std::cout << "porous mean pore speed: "
                   << after.porous_mean_pore_speed << '\n';
-        std::cout << "wrote: " << path.string() << '\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "3D geometry displacement error: " << error.what() << '\n';

@@ -1,13 +1,13 @@
 #include "lbm/openfoam.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <locale>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -40,17 +40,82 @@ std::size_t cell_count(const FoamSnapshot& s) {
     if (count != s.cells.size()) throw std::invalid_argument("OpenFOAM cell count mismatch.");
     return count;
 }
+
+// 只清理本导出器清单中的时间步，逐文件删除；保留用户文件和旧版运行编号目录。
+void prepare_output(const std::filesystem::path& directory) {
+    const auto manifest = directory / ".lbm-times";
+    const std::set<std::string> fields{
+        "U", "rho", "p", "porosity", "rhoA", "rhoB", "alpha.A", "alpha.B", "phase", "pBulk"};
+    auto check_path = [&](const std::filesystem::path& path) {
+        auto current = directory;
+        for (const auto& part : path.lexically_relative(directory)) {
+            current /= part;
+            if (std::filesystem::is_symlink(std::filesystem::symlink_status(current)))
+                throw std::runtime_error("Refusing linked OpenFOAM output path: " + current.string());
+        }
+    };
+    check_path(manifest);
+    std::set<std::string> times;
+    const bool managed = std::filesystem::exists(manifest);
+    if (managed) {
+        std::ifstream in(manifest);
+        std::string version, time;
+        std::getline(in, version);
+        if (version != "LBM_OPENFOAM_TIMES_V1") throw std::runtime_error("Invalid LBM output manifest.");
+        while (std::getline(in, time)) {
+            if (time.empty() || time.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error("Invalid time in LBM output manifest.");
+            times.insert(time);
+        }
+        if (in.bad()) throw std::runtime_error("Cannot read LBM output manifest.");
+    }
+    for (const auto& relative : {"constant", "system", "lbm.foam"}) {
+        const auto path = directory / relative;
+        check_path(path);
+        if (!managed && std::filesystem::exists(path))
+            throw std::runtime_error("Output is not managed by LBM: " + path.string());
+    }
+    check_path(directory / "constant" / "polyMesh");
+    for (const auto* name : {"points", "faces", "owner", "neighbour", "boundary"})
+        check_path(directory / "constant" / "polyMesh" / name);
+    check_path(directory / "system" / "controlDict");
+    if (std::filesystem::exists(directory)) {
+        for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+            const auto name = entry.path().filename().string();
+            if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos && times.count(name) == 0)
+                throw std::runtime_error("Unmanaged time directory: " + entry.path().string());
+        }
+    }
+    // 先检查所有目标，再删除，避免未知文件导致清理到一半才报错。
+    for (const auto& time : times) {
+        const auto path = directory / time;
+        check_path(path);
+        if (!std::filesystem::exists(path)) continue;
+        for (const auto& entry : std::filesystem::directory_iterator(path)) {
+            check_path(entry.path());
+            if (!entry.is_regular_file() || fields.count(entry.path().filename().string()) == 0)
+                throw std::runtime_error("Unmanaged file in previous time directory: " + entry.path().string());
+        }
+    }
+    for (const auto& time : times) {
+        const auto path = directory / time;
+        if (!std::filesystem::exists(path)) continue;
+        for (const auto& name : fields) std::filesystem::remove(path / name);
+        std::filesystem::remove(path); // 仅删除已清空的时间目录，不递归。
+    }
+    std::filesystem::create_directories(directory);
+    auto out = file(manifest);
+    out << "LBM_OPENFOAM_TIMES_V1\n";
+    out.close();
+}
 } // namespace
 
 std::filesystem::path openfoam_result_path(const char* case_name) {
-    const auto tick = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto base = std::filesystem::path(LBM_RESULT_DIR) / "openfoam" / case_name;
-    std::filesystem::create_directories(base);
-    for (int i = 0; ; ++i) {
-        const auto path = base / (std::to_string(tick) + "_" + std::to_string(i));
-        if (std::filesystem::create_directory(path)) return path;
-    }
+    const std::string name = case_name ? case_name : "";
+    if (name.empty() || name == "." || name == ".." ||
+        name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos)
+        throw std::invalid_argument("Invalid OpenFOAM case name.");
+    return std::filesystem::path(LBM_RESULT_DIR) / "openfoam" / name;
 }
 
 void OpenFoamWriter::validate(const FoamSnapshot& s) const {
@@ -79,8 +144,6 @@ OpenFoamWriter::OpenFoamWriter(const std::filesystem::path& directory, const Foa
       patches_{{"walls", "wall", {}}, {"inlet", "patch", {}}, {"outlet", "patch", {}},
                {"outer", "patch", {}}, {"frontAndBack", "empty", {}}} {
     validate(initial);
-    if (std::filesystem::exists(directory_) && !std::filesystem::is_empty(directory_))
-        throw std::invalid_argument("OpenFOAM output directory must be empty (use a new run directory).");
     const auto& s = initial;
     std::vector<int> labels(s.cells.size(), -1);
     for (std::size_t i = 0; i < s.cells.size(); ++i) {
@@ -130,6 +193,7 @@ OpenFoamWriter::OpenFoamWriter(const std::filesystem::path& directory, const Foa
             }
         }
     }
+    prepare_output(directory_);
     const auto mesh = directory_ / "constant" / "polyMesh";
     std::filesystem::create_directories(mesh);
     auto pts = file(mesh / "points"); header(pts, "vectorField", "constant/polyMesh", "points");
@@ -178,6 +242,12 @@ void OpenFoamWriter::write(int step, const FoamSnapshot& s) const {
     validate(s);
     const auto time = std::to_string(step);
     const auto path = directory_ / time;
+    // 写场之前登记时间步，中途中断产生的部分文件也能在下次运行清理。
+    std::ofstream manifest;
+    manifest.exceptions(std::ios::failbit | std::ios::badbit);
+    manifest.open(directory_ / ".lbm-times", std::ios::app);
+    manifest << time << '\n';
+    manifest.close();
     std::filesystem::create_directories(path);
     auto field = [&](const char* name, bool vector, auto value) {
         auto out = file(path / name);
