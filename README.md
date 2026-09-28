@@ -17,7 +17,68 @@
 所有案例仅按输出间隔保存 OpenFOAM 网格与完整场时间序列，不再生成 SVG，统一写入项目根目录下的 `result` 文件夹。
 `result` 与 `src` 同级；程序使用编译期写入的绝对路径，因此从 VSCode 运行或直接双击 exe 都会输出到同一个位置。
 
-## OpenFOAM 格式输出
+## 从案例文件驱动通用 LBM 求解器
+
+现在可以修改案例目录中的网格、初始场和配置运行不同仿真，不必修改或重新编译案例 C++。
+新增三个 Windows 原生命令，使用 OpenFOAM ASCII 字典和场文件的明确子集：
+
+```powershell
+.\scripts\build_vs2022.bat
+.\bin\lbm_blockMesh.exe -case .\cases\channel2d
+.\bin\lbm_setFields.exe -case .\cases\channel2d
+.\bin\lbm_solver.exe -case .\cases\channel2d
+```
+
+`lbm_blockMesh` 只生成网格，不修改 `0/`；`lbm_setFields` 按区域修改已有初始场；`lbm_solver` 只读取输入并计算。
+手工编辑 `0/` 后可直接运行求解器，**不要再执行 setFields，否则其字典会重新赋值**。
+改变网格单元数后，应重建网格并把旧非均匀初始场恢复成 `uniform`，再执行 setFields；旧列表长度不匹配会报错。
+
+```text
+cases/channel2d/
+  system/blockMeshDict    网格顶点、单元数、边界
+  system/setFieldsDict    默认值和区域赋值
+  system/lbmDict          格子、碰撞、松弛时间、两相及多孔参数
+  system/controlDict     endTime 和 writeInterval（整数格子步数）
+  constant/polyMesh/     points、faces、owner、neighbour、boundary
+  0/U                   初始三分量速度及速度边界
+  0/rho                 初始密度及密度边界，可用 0/p 替代
+  0/alpha.A             两相时必须提供的组分密度分数
+  0/porosity            可选材料孔隙度，默认 1
+```
+
+结果写到 `result/openfoam/channel2d/lbm.foam`，不会覆盖输入案例的 `0/` 和网格。重复求解仍覆盖同名结果。
+不同输入目录的末级名称应不同，否则它们对应相同结果目录。
+
+提供四个模板：
+
+| 案例目录 | 模型 | 可修改内容 |
+| --- | --- | --- |
+| `cases/channel2d` | D2Q9 单相通道 | 入口速度、初始 U/rho、分辨率 |
+| `cases/droplet2d` | D2Q9 封闭两相液滴 | sphereToCell 半径、相分布、湿润参数 |
+| `cases/displacement3d` | D3Q27 三维驱替 | 入口相分数、boxToCell 多孔区 |
+| `cases/closed3d` | D3Q19 三维封闭域 | 初始速度扰动、密度分布 |
+
+### 输入范围与边界
+
+- 网格必须是轴对齐、活动方向等间距的正方形/立方体体素，可含挖空的固体区域；二维为一层 z 单元，前后面必须 `empty`，z 厚度可独立设置。
+- 导入原生 `polyMesh` 会根据单元中心重新映射编号，支持外部 OpenFOAM `blockMesh` 生成的多块共形均匀网格；不支持非均匀加密、斜网格、曲面单元、内部零厚度挡板、周期 patch 或任意非结构网格。矩形包围盒含填充固体格点最多 200 万个。
+- 自带 `lbm_blockMesh` 支持一个标准轴对齐 `hex`、`simpleGrading (1 1 1)`、空 `edges`/`mergePatchPairs`，以及命名为 `walls`、`inlet`、`outlet`、`frontAndBack` 的边界。它不是完整 OpenFOAM blockMesh 的替代品。
+- 左侧入口：网格 `patch`，U 为统一的 `fixedValue uniform (ux 0 0)`；rho（或 p）和两相 alpha.A 也用统一 fixedValue。右侧出口的 U/rho/alpha.A 为 `zeroGradient`。封闭域可以没有入口出口。外部网格的 patch 名称不限，类型和方向仍须符合上述条件。
+- 静止固壁：网格 `wall`，U 为 `noSlip` 或零速度 `fixedValue`，标量为 `zeroGradient`。两相接触角通过 lbmDict 的 `contactAngle`/`wallAdhesion` 设置；尚不解析 OpenFOAM 接触角边界类型或移动壁面。原有顶盖、液滴碰撞专用 exe 保留原算法。
+- `0/U`、`0/rho`（或 `0/p`）、`0/alpha.A` 支持 `uniform` 与 `nonuniform List<...>`，列表必须与输入网格单元数量一致；支持行注释、块注释、带引号的字典名。不支持 binary/gzip、宏引用、`#include`、`#codeStream` 或表达式，遇到会报错。
+- 字段必须声明无量纲 `dimensions [0 0 0 0 0 0 0]`；速度、密度、时间和模型参数均用格子单位。几何坐标和间距保持输入数值，**网格尺寸缩放不自动完成物理单位换算**。
+- p 是理想部分压强，转换为 `rho = 3*p`；rho 和 p 同时存在时内部值必须一致。两相由 rho 和 alpha.A 构造 rhoA/rhoB；入口 alpha.A 须严格位于 (0,1)，初始内部场允许 0 或 1。rhoA/rhoB、phase、pBulk 为派生输出，不是本入口的独立输入变量。
+- `setFieldsDict` 支持 `defaultFieldValues`、`boxToCell`、`sphereToCell` 和 `volScalarFieldValue`/`volVectorFieldValue`，区域按单元中心选择，后面的区域覆盖前面的区域，保留字段的边界字典。
+
+修改 `system/controlDict` 的 `endTime` 和 `writeInterval` 控制计算与输出；目前只支持 `startTime 0`、`deltaT 1`、`writeControl timeStep`。
+修改 `system/lbmDict` 可选择 singlePhase/twoPhase、D2Q9/D3Q19/D3Q27、BGK/MRT、tau/tauA/tauB。
+两相另支持 interactionStrength、bodyForce、contactAngle、wallAdhesion、recoloring、poreDiameter、darcyDrag、forchheimerDrag；单相暂不支持体力和多孔阻力。
+宏观初始场被重建为平衡分布，因此本入口是初始化求解，**不是保存全部分布函数的精确断点续算**。
+
+安装了 OpenFOAM 时，也可以使用其 `blockMesh -case ...` 和 `setFields -case ...` 准备符合上述范围的 ASCII 文件，再运行 `lbm_solver`。
+本项目不依赖 OpenFOAM 安装；所实现语法参考 [blockMesh 文档](https://doc.cfd.direct/openfoam/user-guide-v14/blockmesh) 和 [场文件说明](https://www.openfoam.com/documentation/user-guide/2-openfoam-cases/2-2-basic-inputoutput-file-format)。
+
+## OpenFOAM 结果查看
 
 十个案例均默认启用。运行方式和 `output_interval` 不变，初始步、采样步和最后一步均保存。
 每次运行生成 `result/openfoam/<案例源文件名>/lbm.foam`，控制台会打印完整路径。

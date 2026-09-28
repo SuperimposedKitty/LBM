@@ -924,4 +924,29 @@ FoamSnapshot TwoPhaseSolver3D::openfoam_snapshot() const {
     return snapshot;
 }
 
+void TwoPhaseSolver3D::initialize_fields(const FoamSnapshot& input) {
+    validate_initial_snapshot(input);
+    if (input.nx != nx_ || input.ny != ny_ || input.nz != nz_ ||
+        input.two_phase != true || input.two_dimensional != false ||
+        input.cells.size() != rho_.size())
+        throw std::invalid_argument("Imported fields do not match solver dimensions/model.");
+    geometry_cells_.resize(input.cells.size());
+    geometry_initialized_ = true;
+    for (int z = 0; z < nz_; ++z) {
+        for (int y = 0; y < ny_; ++y) {
+            for (int x = 0; x < nx_; ++x) {
+                const auto i = scalar_index(x, y, z);
+                const auto& cell = input.cells[i];
+                solid_[i] = cell.solid ? 1 : 0;
+                geometry_cells_[i] = cell.solid ? GeometryCell::Solid :
+                    (cell.boundary == 1 ? GeometryCell::Inlet :
+                     (cell.boundary == 2 ? GeometryCell::Outlet : GeometryCell::Fluid));
+                porosity_[i] = cell.solid ? 0.0 : cell.porosity;
+                set_equilibrium_cell(x, y, z, cell.rho_a, cell.rho_b,
+                    cell.velocity[0], cell.velocity[1], cell.velocity[2]);
+            }
+        }
+    }
+}
+
 } // namespace lbm

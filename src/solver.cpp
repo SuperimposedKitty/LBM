@@ -543,4 +543,31 @@ FoamSnapshot Solver::openfoam_snapshot() const {
     return snapshot;
 }
 
+void Solver::initialize_fields(const FoamSnapshot& input) {
+    validate_initial_snapshot(input);
+    if (input.nx != grid_.nx || input.ny != grid_.ny || input.nz != 1 ||
+        input.two_phase != false || input.two_dimensional != true ||
+        input.cells.size() != grid_.rho.size())
+        throw std::invalid_argument("Imported fields do not match solver dimensions/model.");
+    geometry_cells_.resize(input.cells.size());
+    masked_flow_initialized_ = true;
+    for (int z = 0; z < 1; ++z) {
+        for (int y = 0; y < grid_.ny; ++y) {
+            for (int x = 0; x < grid_.nx; ++x) {
+                const auto i = grid_.scalar_index(x, y);
+                const auto& cell = input.cells[i];
+                grid_.solid[i] = cell.solid ? 1 : 0;
+                geometry_cells_[i] = cell.solid ? GeometryCell::Solid :
+                    (cell.boundary == 1 ? GeometryCell::Inlet :
+                     (cell.boundary == 2 ? GeometryCell::Outlet : GeometryCell::Fluid));
+                grid_.rho[i] = cell.rho;
+                grid_.ux[i] = cell.velocity[0];
+                grid_.uy[i] = cell.velocity[1];
+                for (int q = 0; q < D2Q9::q; ++q)
+                    grid_.f[grid_.dist_index(x,y,q)] = equilibrium(q, cell.rho, cell.velocity[0], cell.velocity[1]);
+            }
+        }
+    }
+}
+
 } // namespace lbm

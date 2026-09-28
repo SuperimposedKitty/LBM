@@ -42,6 +42,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(lbm
+    src/foam_case.cpp
     src/openfoam.cpp
     src/collision.cpp
     src/collision3d.cpp
@@ -157,7 +158,18 @@ target_link_libraries(lbm_d3_droplet PRIVATE lbm)
 configure_lbm_target(lbm_d3_droplet)
 
 include(CTest)
+foreach(tool lbm_blockMesh lbm_setFields lbm_solver)
+    add_executable(${tool} examples/foam_case_main.cpp)
+    target_link_libraries(${tool} PRIVATE lbm)
+    target_compile_definitions(${tool} PRIVATE LBM_CASE_TOOL="${tool}")
+    configure_lbm_target(${tool})
+endforeach()
 if(BUILD_TESTING)
+    add_executable(lbm_case_tests tests/foam_case_input.cpp)
+    target_link_libraries(lbm_case_tests PRIVATE lbm)
+    target_compile_definitions(lbm_case_tests PRIVATE LBM_CASES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
+    configure_lbm_target(lbm_case_tests)
+    add_test(NAME lbm_case_input COMMAND $<TARGET_FILE:lbm_case_tests>)
     add_executable(lbm_openfoam_tests tests/openfoam_output.cpp)
     target_link_libraries(lbm_openfoam_tests PRIVATE lbm)
     configure_lbm_target(lbm_openfoam_tests)

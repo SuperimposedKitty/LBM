@@ -1,0 +1,17 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    location "system";
+    object controlDict;
+}
+application lbm_solver;
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+endTime 200;
+deltaT 1;
+writeControl timeStep;
+writeInterval 20;
+writeFormat ascii;

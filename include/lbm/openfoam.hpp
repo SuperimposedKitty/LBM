@@ -23,7 +23,13 @@ struct FoamSnapshot {
     bool two_phase = false;
     double interaction_strength = 0.0;
     std::vector<FoamCell> cells;
+    // 格点 (0,0,0) 的坐标和网格步长；场值仍使用格子单位。
+    std::array<double, 3> origin{0.0, 0.0, 0.0};
+    std::array<double, 3> spacing{1.0, 1.0, 1.0};
 };
+
+// 文件导入与公开初始化接口共用校验，失败时不修改求解器状态。
+void validate_initial_snapshot(const FoamSnapshot& snapshot);
 
 // 原生 OpenFOAM 后处理案例，不包含可用于续算的有限体积求解器设置。
 class OpenFoamWriter {

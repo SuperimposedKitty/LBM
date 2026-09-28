@@ -118,13 +118,41 @@ std::filesystem::path openfoam_result_path(const char* case_name) {
     return std::filesystem::path(LBM_RESULT_DIR) / "openfoam" / name;
 }
 
+void validate_initial_snapshot(const FoamSnapshot& s) {
+    cell_count(s);
+    bool any=false;
+    for(std::size_t i=0;i<s.cells.size();++i) {
+        const auto& c=s.cells[i];
+        for(double v:{c.rho,c.rho_a,c.rho_b,c.velocity[0],c.velocity[1],c.velocity[2],c.porosity})
+            if(!std::isfinite(v))throw std::invalid_argument("Non-finite initial field");
+        if(c.rho<=0 || c.rho_a<0 || c.rho_b<0 || c.boundary<0 || c.boundary>2)
+            throw std::invalid_argument("Invalid initial density/boundary");
+        if(c.solid)continue;
+        any=true;
+        if(c.porosity<=0 || c.porosity>1 || (s.two_dimensional&&c.velocity[2]!=0))
+            throw std::invalid_argument("Invalid initial porosity/velocity");
+        if(s.two_phase && std::abs(c.rho-c.rho_a-c.rho_b)>1e-10*std::max(1.0,c.rho))
+            throw std::invalid_argument("Initial component densities do not sum to rho");
+        const auto x=i%static_cast<std::size_t>(s.nx);
+        if(c.boundary==1 && (x!=0 || s.nx<2 || s.cells[i+1].solid))
+            throw std::invalid_argument("Initial inlet must be at x=0 with a fluid neighbour");
+        if(c.boundary==2 && (x!=static_cast<std::size_t>(s.nx-1) || s.nx<2 || s.cells[i-1].solid))
+            throw std::invalid_argument("Initial outlet must be at right x face with a fluid neighbour");
+    }
+    if(!any)throw std::invalid_argument("Initial mesh contains no fluid cells");
+}
+
 void OpenFoamWriter::validate(const FoamSnapshot& s) const {
     cell_count(s);
     if (s.nx != topology_.nx || s.ny != topology_.ny || s.nz != topology_.nz ||
         s.two_dimensional != topology_.two_dimensional || s.two_phase != topology_.two_phase ||
-        s.interaction_strength != topology_.interaction_strength)
+        s.interaction_strength != topology_.interaction_strength ||
+        s.origin != topology_.origin || s.spacing != topology_.spacing)
         throw std::invalid_argument("OpenFOAM snapshot topology/model changed.");
     if (!std::isfinite(s.interaction_strength)) throw std::invalid_argument("Invalid interaction strength.");
+    for (int d = 0; d < 3; ++d)
+        if (!std::isfinite(s.origin[d]) || !std::isfinite(s.spacing[d]) || s.spacing[d] <= 0)
+            throw std::invalid_argument("Invalid mesh coordinates.");
     for (std::size_t i = 0; i < s.cells.size(); ++i) {
         const auto& c = s.cells[i];
         if (c.solid != topology_.cells[i].solid || c.boundary != topology_.cells[i].boundary)
@@ -198,7 +226,9 @@ OpenFoamWriter::OpenFoamWriter(const std::filesystem::path& directory, const Foa
     std::filesystem::create_directories(mesh);
     auto pts = file(mesh / "points"); header(pts, "vectorField", "constant/polyMesh", "points");
     pts << points.size() << "\n(\n";
-    for (auto p : points) pts << '(' << p[0]-0.5 << ' ' << p[1]-0.5 << ' ' << p[2]-0.5 << ")\n";
+    for (auto p : points) pts << '(' << s.origin[0]+s.spacing[0]*(p[0]-0.5) << ' '
+        << s.origin[1]+s.spacing[1]*(p[1]-0.5) << ' '
+        << s.origin[2]+s.spacing[2]*(p[2]-0.5) << ")\n";
     pts << ")\n"; pts.close();
     std::size_t count = internal.size();
     for (const auto& b : boundary) count += b.size();

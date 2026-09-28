@@ -1,0 +1,19 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    location "system";
+    object lbmDict;
+}
+model twoPhase;
+lattice D2Q9;
+collision MRT;
+tau 0.8;
+tauA 1;
+tauB 1;
+interactionStrength 3;
+contactAngle 90;
+wallAdhesion 0.08;
+recoloring 0;
+bodyForce (0 0 0);

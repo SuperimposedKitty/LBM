@@ -43,6 +43,8 @@ public:
     void write_csv(const std::string& path) const;
     void write_vtk(const std::string& path) const;
     FoamSnapshot openfoam_snapshot() const;
+    // 用宏观初始场构造平衡分布，不代表非平衡分布的断点续算。
+    void initialize_fields(const FoamSnapshot& input);
 
 private:
     Grid grid_;

@@ -5,6 +5,8 @@
 
 # Generated simulation results
 /result/
+/cases/**/constant/polyMesh/
+/cases/**/.lbm-mesh-work/
 /output/
 
 # Python cache files
