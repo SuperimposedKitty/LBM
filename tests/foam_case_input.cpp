@@ -149,9 +149,9 @@ int main() {
                 reverse_cells(path, static_cast<int>(lbm::read_foam_case(path).cell_order.size()));
                 auto assignment = read(path / "system" / "setFieldsDict");
                 write(path / "system" / "setFieldsDict",
-                      replaced(assignment, "regions\n(\n);",
-                               "regions\n( boxToCell { box (0 0 0) (4 12 1); "
-                               "fieldValues (volVectorFieldValue U (0.01 0 0)); } );"));
+                      replaced(assignment, "regions\n(\n",
+                               "regions\n(\n boxToCell { box (0 0 0) (4 12 1); "
+                               "fieldValues (volVectorFieldValue U (0.01 0 0)); }\n"));
             }
             lbm::set_fields_case(path);
             auto c = lbm::read_foam_case(path);
@@ -161,6 +161,10 @@ int main() {
                       "Scaled coordinates lost");
             check(!c.cell_order.empty(), "No imported cells");
             if (std::string(name) == "channel2d") {
+                const auto solid_count = std::count_if(c.cell_order.begin(), c.cell_order.end(),
+                    [&](std::size_t id) { return s.cells[id].solid; });
+                check(solid_count > 0 && solid_count < c.cell_order.size() / 4,
+                      "Channel cylinder was not initialized");
                 for (auto id : c.cell_order) {
                     const auto x = id % static_cast<std::size_t>(s.nx);
                     const double x_center = s.origin[0] + x * s.spacing[0];
@@ -188,6 +192,12 @@ int main() {
                                "internalField uniform 0.2;"));
                 rejects([&] { lbm::read_foam_case(path); });
                 std::filesystem::remove(path / "0" / "p");
+                const auto solid_field = read(path / "0" / "solid");
+                write(path / "0" / "solid",
+                      replaced(read(source / "0" / "solid"),
+                               "internalField uniform 0;", "internalField uniform 0.5;"));
+                rejects([&] { lbm::read_foam_case(path); });
+                write(path / "0" / "solid", solid_field);
             }
             if (std::string(name) == "channel2d")
                 check(c.cell_order.front() > c.cell_order.back(), "Cell permutation not preserved");
@@ -208,7 +218,9 @@ int main() {
                                                    file,
                                                mesh_target / file);
                 auto imported = lbm::read_foam_case(obstacle_path);
-                check(imported.cell_order.size() + 1 == c.cell_order.size() &&
+                const auto fluid_count = std::count_if(c.cell_order.begin(), c.cell_order.end(),
+                    [&](std::size_t id) { return !s.cells[id].solid; });
+                check(imported.cell_order.size() + 1 == fluid_count &&
                           imported.initial.cells[blocked].solid,
                       "Imported solid obstacle lost");
                 lbm::Solver solver(imported.initial.nx, imported.initial.ny, imported.single);

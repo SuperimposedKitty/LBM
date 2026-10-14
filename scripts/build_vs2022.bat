@@ -27,7 +27,7 @@ if exist build\CMakeCache.txt (
     if errorlevel 1 exit /b %errorlevel%
 )
 
-"%CMAKE%" --build build --config RelWithDebInfo --parallel
+"%CMAKE%" --build build --config RelWithDebInfo --parallel 1
 if errorlevel 1 exit /b %errorlevel%
 
 echo.

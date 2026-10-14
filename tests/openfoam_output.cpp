@@ -95,14 +95,21 @@ void verify(const std::filesystem::path& path, const lbm::FoamSnapshot& s) {
     require(next==faces[0], "Boundary face coverage");
     require((bounds.find("type empty")!=std::string::npos)==s.two_dimensional, "Wrong empty patch");
     auto rho=field(path/"0"/"rho"), pressure=field(path/"0"/"p"), velocity=field(path/"0"/"U");
+    auto speed=field(path/"0"/"speed"), vorticity=field(path/"0"/"vorticity");
     require(rho[0]==count && rho.size()==count+1, "Scalar field count");
     require(velocity[0]==count && velocity.size()==3*count+1, "Vector field count");
+    require(speed[0]==count && speed.size()==count+1, "Speed field count");
+    require(vorticity[0]==count && vorticity.size()==3*count+1, "Vorticity field count");
     int j=0;
     for (const auto& c : s.cells) {
         if (c.solid) continue;
         require(std::abs(rho[1+j]-c.rho)<1e-14, "Density mapping");
         require(std::abs(pressure[1+j]-c.rho/3)<1e-14, "Pressure mapping");
         for (int d=0; d<3; ++d) require(std::abs(velocity[1+3*j+d]-c.velocity[d])<1e-14, "Velocity mapping");
+        const double expected_speed=std::sqrt(c.velocity[0]*c.velocity[0]+c.velocity[1]*c.velocity[1]+c.velocity[2]*c.velocity[2]);
+        require(std::abs(speed[1+j]-expected_speed)<1e-14, "Speed mapping");
+        for (int d=0; d<3; ++d)
+            require(std::isfinite(vorticity[1+3*j+d]), "Non-finite vorticity");
         ++j;
     }
     if (s.two_phase) {
@@ -169,6 +176,19 @@ int main() {
         }
         obstacle.cells[5].solid=true;
         check("obstacle",obstacle);
+        lbm::FoamSnapshot shear;
+        shear.nx=5; shear.ny=5; shear.cells.resize(25);
+        for (int y=0; y<5; ++y)
+            for (int x=0; x<5; ++x)
+                shear.cells[y*5+x].velocity[1]=0.01*x;
+        check("shear",shear);
+        auto curl=field(base/"shear"/"0"/"vorticity");
+        for (int i=0; i<25; ++i) {
+            require(std::abs(curl[1+3*i])<1e-14 &&
+                        std::abs(curl[2+3*i])<1e-14 &&
+                        std::abs(curl[3+3*i]-0.01)<1e-14,
+                    "Analytic curl mismatch");
+        }
         // 重跑使用同一目录，较短的新计算不能残留旧时间步或旧两相场。
         const auto repeat = base / "overwrite";
         std::filesystem::create_directories(repeat / "old_run_0");

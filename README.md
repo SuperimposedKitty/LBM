@@ -44,6 +44,7 @@ cases/channel2d/
   0/rho                 初始密度及密度边界，可用 0/p 替代
   0/alpha.A             两相时必须提供的组分密度分数
   0/porosity            可选材料孔隙度，默认 1
+  0/solid               可选固体掩膜，0 为流体、1 为固体
 ```
 
 结果写到 `result/openfoam/channel2d/lbm.foam`，不会覆盖输入案例的 `0/` 和网格。重复求解仍覆盖同名结果。
@@ -53,16 +54,23 @@ cases/channel2d/
 
 | 案例目录 | 模型 | 可修改内容 |
 | --- | --- | --- |
-| `cases/channel2d` | D2Q9 单相通道 | 96×48 网格，入口流速 0.03，计算 3000 步；观察入口流动与壁面边界层 |
+| `cases/channel2d` | D2Q9 单相圆柱绕流 | 96×48 网格；`setFields` 生成圆柱障碍，观察加速区和尾流 |
 | `cases/droplet2d` | D2Q9 封闭两相液滴 | sphereToCell 半径、相分布、湿润参数 |
 | `cases/displacement3d` | D3Q27 三维驱替 | 入口相分数、boxToCell 多孔区 |
 | `cases/closed3d` | D3Q19 三维封闭域 | 20³ 网格，正反向初始速度层；观察剪切流随时间衰减 |
 
-两个单相模板现在有可观察的非零流动。运行 `lbm_blockMesh` 重建网格后，
-`closed3d` **必须运行一次 `lbm_setFields`**，才能把 `setFieldsDict` 中的初始速度层写入 `0/U`；
-直接运行求解器只会读取当前 `0/U`，原始的均匀零速度场不会自行产生流动。
-在 ParaView 中打开各自的 `lbm.foam`，关闭 `Skip Zero Time` 后对 `U` 选择 `Magnitude`，
-二维通道用 `Slice`/`Stream Tracer` 查看速度分布和流线，三维封闭域用切片查看正反向速度层的演化。
+运行 `lbm_blockMesh` 重建网格后，两个单相模板都**必须运行一次 `lbm_setFields`**：
+`channel2d` 把圆柱写入 `0/solid`，`closed3d` 把初始速度层写入 `0/U`。
+直接运行求解器只会读取当前 `0/`，不会自动执行区域赋值。
+在 ParaView 中打开 `result/openfoam/channel2d/lbm.foam`，确认 Mesh Regions 中启用了 `internalMesh`，
+点 `Apply` 和 `Reset Camera`，
+跳到时间 1500 或 3000；用 `Surface` 表示并选择 `speed` 着色，固定色标范围约为 `0..0.045`，
+即可看到圆柱两侧的加速区及后方低速尾流。切换到 `vorticity` 的 `Z` 分量，
+使用发散色表并固定范围 `-0.07..0.07`，可区分圆柱上下符号相反的剪切层。
+若想看流线，选中原始 `lbm.foam` 体网格，添加 `Stream Tracer`，矢量选 `U`；
+若过滤器无法使用单元场，先添加 `Cell Data to Point Data` 再接 `Stream Tracer`。
+将种子线放在圆柱上游、跨过通道高度。后期流场趋于稳定，时间动画变化较小；流线显示的是流动路径，
+不是随时间移动的粒子。`closed3d` 是有限初始扰动的衰减实验，不是持续驱动流；用切片显示 `vorticity` 更合适。
 这些网格和步数是演示参数，改变分辨率会改变格子尺度下的雷诺数与演化时间，不能视为物理量纲下的网格收敛验证。
 
 ### 输入范围与边界
@@ -72,6 +80,7 @@ cases/channel2d/
 - 自带 `lbm_blockMesh` 支持一个标准轴对齐 `hex`、`simpleGrading (1 1 1)`、空 `edges`/`mergePatchPairs`，以及命名为 `walls`、`inlet`、`outlet`、`frontAndBack` 的边界。它不是完整 OpenFOAM blockMesh 的替代品。
 - 左侧入口：网格 `patch`，U 为统一的 `fixedValue uniform (ux 0 0)`；rho（或 p）和两相 alpha.A 也用统一 fixedValue。右侧出口的 U/rho/alpha.A 为 `zeroGradient`。封闭域可以没有入口出口。外部网格的 patch 名称不限，类型和方向仍须符合上述条件。
 - 静止固壁：网格 `wall`，U 为 `noSlip` 或零速度 `fixedValue`，标量为 `zeroGradient`。两相接触角通过 lbmDict 的 `contactAngle`/`wallAdhesion` 设置；尚不解析 OpenFOAM 接触角边界类型或移动壁面。原有顶盖、液滴碰撞专用 exe 保留原算法。
+- 可选 `0/solid` 使用单元中心的 0/1 标量掩膜；`setFieldsDict` 可用 `boxToCell`、`sphereToCell` 赋值。标为 1 的格点从输出流体网格中去除，界面使用静止反弹边界；入口和出口不能标为固体。它不改变输入 `constant/polyMesh`，也不是亚网格曲面边界。
 - `0/U`、`0/rho`（或 `0/p`）、`0/alpha.A` 支持 `uniform` 与 `nonuniform List<...>`，列表必须与输入网格单元数量一致；支持行注释、块注释、带引号的字典名。不支持 binary/gzip、宏引用、`#include`、`#codeStream` 或表达式，遇到会报错。
 - 字段必须声明无量纲 `dimensions [0 0 0 0 0 0 0]`；速度、密度、时间和模型参数均用格子单位。几何坐标和间距保持输入数值，**网格尺寸缩放不自动完成物理单位换算**。
 - p 是理想部分压强，转换为 `rho = 3*p`；rho 和 p 同时存在时内部值必须一致。两相由 rho 和 alpha.A 构造 rhoA/rhoB；入口 alpha.A 须严格位于 (0,1)，初始内部场允许 0 或 1。rhoA/rhoB、phase、pBulk 为派生输出，不是本入口的独立输入变量。
@@ -97,7 +106,7 @@ result/openfoam/geometry_displacement/
   lbm.foam
   constant/polyMesh/{points,faces,owner,neighbour,boundary}
   system/controlDict
-  0/{U,p,rho,porosity,rhoA,rhoB,alpha.A,alpha.B,phase,pBulk}
+  0/{U,speed,vorticity,p,rho,porosity,rhoA,rhoB,alpha.A,alpha.B,phase,pBulk}
   300/...
   600/...
 ```
@@ -112,6 +121,8 @@ result/openfoam/geometry_displacement/
 | 文件 | 含义 |
 | --- | --- |
 | `U` | 三分量混合物速度，二维第三分量为零；速度大小可在 ParaView 选择 Magnitude |
+| `speed` | `U` 的模长，可直接用于着色 |
+| `vorticity` | 相对输入几何坐标的离散旋度；紧邻固体和外边界采用单边差分，其余采用中心差分，未做 SI 单位标定 |
 | `rho`、`p` | 总密度和理想格子压强 `p = rho / 3` |
 | `porosity` | 求解器实际使用的孔隙度；单相 `P` 按普通流体处理，因此为 1 |
 | `rhoA`、`rhoB` | 两相组分密度 |

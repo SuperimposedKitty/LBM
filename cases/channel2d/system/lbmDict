@@ -9,7 +9,7 @@ FoamFile
 model singlePhase;
 lattice D2Q9;
 collision MRT;
-tau 0.8;
+tau 0.58;
 tauA 1;
 tauB 1;
 interactionStrength 3;

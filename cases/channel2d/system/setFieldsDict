@@ -11,7 +11,14 @@ defaultFieldValues
  volVectorFieldValue U (0 0 0)
  volScalarFieldValue rho 1
  volScalarFieldValue porosity 1
+ volScalarFieldValue solid 0
 );
 regions
 (
+ sphereToCell
+ {
+  centre (8 6 0.5);
+  radius 2;
+  fieldValues (volScalarFieldValue solid 1);
+ }
 );

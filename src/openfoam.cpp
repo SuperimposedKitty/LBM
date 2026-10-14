@@ -45,7 +45,8 @@ std::size_t cell_count(const FoamSnapshot& s) {
 void prepare_output(const std::filesystem::path& directory) {
     const auto manifest = directory / ".lbm-times";
     const std::set<std::string> fields{
-        "U", "rho", "p", "porosity", "rhoA", "rhoB", "alpha.A", "alpha.B", "phase", "pBulk"};
+        "U", "speed", "vorticity", "rho", "p", "porosity", "rhoA", "rhoB",
+        "alpha.A", "alpha.B", "phase", "pBulk"};
     auto check_path = [&](const std::filesystem::path& path) {
         auto current = directory;
         for (const auto& part : path.lexically_relative(directory)) {
@@ -285,7 +286,7 @@ void OpenFoamWriter::write(int step, const FoamSnapshot& s) const {
         // 未配置 SI 映射，所有输出量明确标为无量纲格子单位。
         out << "dimensions [0 0 0 0 0 0 0];\ninternalField nonuniform List<"
             << (vector ? "vector" : "scalar") << ">\n" << fluid_.size() << "\n(\n";
-        for (auto i : fluid_) { value(out, s.cells[i]); out << '\n'; }
+        for (auto i : fluid_) { value(out, s.cells[i], i); out << '\n'; }
         out << ");\nboundaryField\n{\n";
         for (const auto& p : patches_) {
             if (p.owners.empty()) continue;
@@ -293,26 +294,61 @@ void OpenFoamWriter::write(int step, const FoamSnapshot& s) const {
             if (std::string(p.type)!="empty") {
                 out << " value nonuniform List<" << (vector ? "vector" : "scalar") << ">\n"
                     << p.owners.size() << "\n(\n";
-                for (int i : p.owners) { value(out, s.cells[fluid_[i]]); out << '\n'; }
+                for (int i : p.owners) { value(out, s.cells[fluid_[i]], fluid_[i]); out << '\n'; }
                 out << ");\n";
             }
             out << "}\n";
         }
         out << "}\n"; out.close();
     };
-    field("U", true, [](auto& out, const FoamCell& c) {
+    auto derivative = [&](std::size_t id, int axis, int component) {
+        const int coordinate[3] = {static_cast<int>(id % s.nx),
+                                   static_cast<int>((id / s.nx) % s.ny),
+                                   static_cast<int>(id / s.nx / s.ny)};
+        const int extent[3] = {s.nx, s.ny, s.nz};
+        auto neighbor = [&](int direction) -> const FoamCell* {
+            const int position = coordinate[axis] + direction;
+            if (position < 0 || position >= extent[axis]) return nullptr;
+            int xyz[3] = {coordinate[0], coordinate[1], coordinate[2]};
+            xyz[axis] = position;
+            const auto index = (static_cast<std::size_t>(xyz[2]) * s.ny + xyz[1]) * s.nx + xyz[0];
+            return s.cells[index].solid ? nullptr : &s.cells[index];
+        };
+        const auto* before = neighbor(-1);
+        const auto* after = neighbor(1);
+        if (before && after)
+            return (after->velocity[component] - before->velocity[component]) /
+                   (2 * s.spacing[axis]);
+        if (after)
+            return (after->velocity[component] - s.cells[id].velocity[component]) /
+                   s.spacing[axis];
+        if (before)
+            return (s.cells[id].velocity[component] - before->velocity[component]) /
+                   s.spacing[axis];
+        return 0.0;
+    };
+    field("U", true, [](auto& out, const FoamCell& c, std::size_t) {
         out << '(' << c.velocity[0] << ' ' << c.velocity[1] << ' ' << c.velocity[2] << ')';
     });
-    field("rho", false, [](auto& out, const FoamCell& c) { out << c.rho; });
-    field("p", false, [](auto& out, const FoamCell& c) { out << c.rho/3.0; });
-    field("porosity", false, [](auto& out, const FoamCell& c) { out << c.porosity; });
+    field("speed", false, [](auto& out, const FoamCell& c, std::size_t) {
+        out << std::sqrt(c.velocity[0] * c.velocity[0] + c.velocity[1] * c.velocity[1] +
+                         c.velocity[2] * c.velocity[2]);
+    });
+    field("vorticity", true, [&](auto& out, const FoamCell&, std::size_t i) {
+        out << '(' << derivative(i, 1, 2) - derivative(i, 2, 1) << ' '
+            << derivative(i, 2, 0) - derivative(i, 0, 2) << ' '
+            << derivative(i, 0, 1) - derivative(i, 1, 0) << ')';
+    });
+    field("rho", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho; });
+    field("p", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho/3.0; });
+    field("porosity", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.porosity; });
     if (s.two_phase) {
-        field("rhoA", false, [](auto& out, const FoamCell& c) { out << c.rho_a; });
-        field("rhoB", false, [](auto& out, const FoamCell& c) { out << c.rho_b; });
-        field("alpha.A", false, [](auto& out, const FoamCell& c) { out << c.rho_a/(c.rho_a+c.rho_b); });
-        field("alpha.B", false, [](auto& out, const FoamCell& c) { out << c.rho_b/(c.rho_a+c.rho_b); });
-        field("phase", false, [](auto& out, const FoamCell& c) { out << (c.rho_a-c.rho_b)/(c.rho_a+c.rho_b); });
-        field("pBulk", false, [&](auto& out, const FoamCell& c) {
+        field("rhoA", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho_a; });
+        field("rhoB", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho_b; });
+        field("alpha.A", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho_a/(c.rho_a+c.rho_b); });
+        field("alpha.B", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho_b/(c.rho_a+c.rho_b); });
+        field("phase", false, [](auto& out, const FoamCell& c, std::size_t) { out << (c.rho_a-c.rho_b)/(c.rho_a+c.rho_b); });
+        field("pBulk", false, [&](auto& out, const FoamCell& c, std::size_t) {
             out << (c.rho + s.interaction_strength*(1-std::exp(-c.rho_a))*(1-std::exp(-c.rho_b)))/3.0;
         });
     }

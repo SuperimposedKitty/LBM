@@ -485,12 +485,15 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
             need(near(rho.data[i][0], 3 * pressure.data[i][0]),
                  "Initial p and rho disagree (rho=3p)");
     }
-    Field alpha, porosity;
+    Field alpha, porosity, solid;
     if (s.two_phase)
         alpha = read_field(path / "0" / "alpha.A", 1, mesh.centers.size());
     bool porous = std::filesystem::exists(path / "0" / "porosity");
     if (porous)
         porosity = read_field(path / "0" / "porosity", 1, mesh.centers.size());
+    const bool has_solid = std::filesystem::exists(path / "0" / "solid");
+    if (has_solid)
+        solid = read_field(path / "0" / "solid", 1, mesh.centers.size());
     Vec lo{1e100, 1e100, 1e100}, hi{-1e100, -1e100, -1e100};
     for (auto center : mesh.centers)
         for (int d = 0; d < 3; ++d) {
@@ -557,6 +560,16 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
             cell.rho_b = cell.rho * (1 - a);
         }
     }
+    if (has_solid) {
+        for (std::size_t i = 0; i < mesh.centers.size(); ++i) {
+            const double value = solid.data[i][0];
+            need(near(value, 0) || near(value, 1), "solid must contain only 0 or 1");
+            s.cells[c.cell_order[i]].solid = near(value, 1);
+        }
+        need(std::any_of(s.cells.begin(), s.cells.end(),
+                         [](const FoamCell &cell) { return !cell.solid; }),
+             "solid field leaves no fluid cells");
+    }
     bool inlet_seen = false, outlet_seen = false;
     double inlet_rho = 1, inlet_alpha = 1;
     for (const auto &patch : mesh.patches) {
@@ -566,6 +579,11 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
         if (s.two_phase)
             ab = Cursor(required(alpha.patches, patch.name)).dict();
         auto type = word(bc, "type"), rt = word(rb, "type");
+        if (has_solid) {
+            auto sb = Cursor(required(solid.patches, patch.name)).dict();
+            need(word(sb, "type") == (patch.type == "empty" ? "empty" : "zeroGradient"),
+                 "solid boundary must be empty or zeroGradient");
+        }
         for (int f = patch.start; f < patch.start + patch.count; ++f) {
             auto center = mesh.centers[mesh.owner[f]], fc = face_center(mesh, f);
             auto &cell = s.cells[c.cell_order[mesh.owner[f]]];
@@ -597,6 +615,7 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
                 need(rt == "zeroGradient" && (!s.two_phase || word(ab, "type") == "zeroGradient"),
                      "Wall scalar fields require zeroGradient; wetting uses lbmDict");
             } else if (type == "fixedValue") {
+                need(!cell.solid, "Inlet cannot be marked solid");
                 need(same_position(center[0], lo[0], mesh.spacing[0]) && fc[0] < center[0] &&
                          same_position(fc[1], center[1], mesh.spacing[1]) &&
                          same_position(fc[2], center[2], mesh.spacing[2]),
@@ -623,6 +642,7 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
                 inlet_alpha = a;
                 cell.boundary = 1;
             } else {
+                need(!cell.solid, "Outlet cannot be marked solid");
                 need(type == "zeroGradient" && rt == "zeroGradient" &&
                          (!s.two_phase || word(ab, "type") == "zeroGradient"),
                      "Unsupported outlet field condition");
@@ -848,7 +868,7 @@ void set_fields_case(const std::filesystem::path &path) {
             need(type == "volScalarFieldValue" || type == "volVectorFieldValue",
                  "Unsupported setFields value type");
             need(name == "U" || name == "rho" || name == "p" || name == "alpha.A" ||
-                     name == "porosity",
+                     name == "porosity" || name == "solid",
                  "Unsupported setFields field: " + name);
             int comp = type == "volVectorFieldValue" ? 3 : 1;
             need((name == "U") == (comp == 3), "Wrong setFields field type");

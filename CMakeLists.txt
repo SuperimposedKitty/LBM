@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.16)
 
 project(lbm_d2q9_cpp LANGUAGES CXX)
 
+if(MSVC)
+    # Embed compile debug records to avoid mspdbsrv/PDB conflicts; link PDBs remain in bin/.
+    string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_RELWITHDEBINFO
+           "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+endif()
+
 get_property(LBM_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(NOT LBM_MULTI_CONFIG AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
