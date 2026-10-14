@@ -146,7 +146,7 @@ int main() {
                 write(path / "0" / "U", original_u);
             }
             if (std::string(name) == "channel2d") {
-                reverse_cells(path, 24 * 12);
+                reverse_cells(path, static_cast<int>(lbm::read_foam_case(path).cell_order.size()));
                 auto assignment = read(path / "system" / "setFieldsDict");
                 write(path / "system" / "setFieldsDict",
                       replaced(assignment, "regions\n(\n);",
@@ -157,12 +157,14 @@ int main() {
             auto c = lbm::read_foam_case(path);
             const auto &s = c.initial;
             if (std::string(name) == "closed3d")
-                check(std::abs(s.spacing[0] - 1e-6) < 1e-15, "Scaled coordinates lost");
+                check(std::abs(s.spacing[0] * (s.nx - 2) - 8e-6) < 1e-15,
+                      "Scaled coordinates lost");
             check(!c.cell_order.empty(), "No imported cells");
             if (std::string(name) == "channel2d") {
                 for (auto id : c.cell_order) {
                     const auto x = id % static_cast<std::size_t>(s.nx);
-                    check(std::abs(s.cells[id].velocity[0] - (x < 4 ? 0.01 : 0.0)) < 1e-12,
+                    const double x_center = s.origin[0] + x * s.spacing[0];
+                    check(std::abs(s.cells[id].velocity[0] - (x_center < 4 ? 0.01 : 0.0)) < 1e-12,
                           "Nonuniform values do not follow permuted cell labels");
                 }
             }
@@ -251,7 +253,8 @@ int main() {
             const auto u = read(path / "0" / "U"), rho = read(path / "0" / "rho"),
                        points = read(path / "constant" / "polyMesh" / "points");
             write(path / "system" / "controlDict",
-                  replaced(read(path / "system" / "controlDict"), "endTime 200;", "endTime 4;"));
+                  replaced(read(path / "system" / "controlDict"),
+                           "endTime " + std::to_string(c.steps) + ";", "endTime 4;"));
             lbm::solve_foam_case(path);
             check(read(path / "0" / "U") == u && read(path / "0" / "rho") == rho &&
                       read(path / "constant" / "polyMesh" / "points") == points,
@@ -273,6 +276,25 @@ int main() {
             rejects([&] { lbm::read_foam_case(path); });
             write(path / "0" / "U", u);
             std::cout << "PASS case " << name << '\n';
+        }
+        {
+            auto source = std::filesystem::path(LBM_CASES_DIR) / "closed3d";
+            auto path = root / "input_test_closed3d_flow";
+            std::filesystem::create_directories(path);
+            for (const auto *dir : {"0", "system"})
+                std::filesystem::copy(source / dir, path / dir,
+                                      std::filesystem::copy_options::recursive);
+            lbm::block_mesh_case(path);
+            lbm::set_fields_case(path);
+            auto c = lbm::read_foam_case(path);
+            lbm::Solver3D solver(c.initial.nx, c.initial.ny, c.initial.nz, c.single3d);
+            solver.initialize_fields(c.initial);
+            check(solver.diagnostics().max_speed > 0.04,
+                  "Closed 3D template has no initial flow");
+            solver.step_masked_flow(c.inlet_velocity);
+            check(std::isfinite(solver.diagnostics().max_speed) &&
+                      solver.diagnostics().max_speed > 0.001,
+                  "Closed 3D template flow did not evolve");
         }
         return 0;
     } catch (const std::exception &e) {

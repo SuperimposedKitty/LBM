@@ -53,10 +53,17 @@ cases/channel2d/
 
 | 案例目录 | 模型 | 可修改内容 |
 | --- | --- | --- |
-| `cases/channel2d` | D2Q9 单相通道 | 入口速度、初始 U/rho、分辨率 |
+| `cases/channel2d` | D2Q9 单相通道 | 96×48 网格，入口流速 0.03，计算 3000 步；观察入口流动与壁面边界层 |
 | `cases/droplet2d` | D2Q9 封闭两相液滴 | sphereToCell 半径、相分布、湿润参数 |
 | `cases/displacement3d` | D3Q27 三维驱替 | 入口相分数、boxToCell 多孔区 |
-| `cases/closed3d` | D3Q19 三维封闭域 | 初始速度扰动、密度分布 |
+| `cases/closed3d` | D3Q19 三维封闭域 | 20³ 网格，正反向初始速度层；观察剪切流随时间衰减 |
+
+两个单相模板现在有可观察的非零流动。运行 `lbm_blockMesh` 重建网格后，
+`closed3d` **必须运行一次 `lbm_setFields`**，才能把 `setFieldsDict` 中的初始速度层写入 `0/U`；
+直接运行求解器只会读取当前 `0/U`，原始的均匀零速度场不会自行产生流动。
+在 ParaView 中打开各自的 `lbm.foam`，关闭 `Skip Zero Time` 后对 `U` 选择 `Magnitude`，
+二维通道用 `Slice`/`Stream Tracer` 查看速度分布和流线，三维封闭域用切片查看正反向速度层的演化。
+这些网格和步数是演示参数，改变分辨率会改变格子尺度下的雷诺数与演化时间，不能视为物理量纲下的网格收敛验证。
 
 ### 输入范围与边界
 
