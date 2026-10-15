@@ -5,6 +5,7 @@
 #include "lbm/collision3d.hpp"
 #include "lbm/geometry_mask3d.hpp"
 #include "lbm/grid3d.hpp"
+#include "lbm/single_phase.hpp"
 
 #include <string>
 #include <vector>
@@ -17,11 +18,13 @@ struct Solver3DConfig {
     Lattice3DModel lattice_model = Lattice3DModel::D3Q19;
     CollisionModel collision_model = CollisionModel::MRT;
     MrtRelaxationRates3D mrt{};
+    SinglePhaseOptions flow{};
 };
 
 struct Diagnostics3D {
     double mass = 0.0;
     double max_speed = 0.0;
+    BoundaryDiagnostics boundary{};
 };
 
 class Solver3D {
@@ -40,6 +43,7 @@ public:
     void run(int steps);
     void run_lid_driven_cavity(int steps, double lid_velocity);
     Diagnostics3D diagnostics() const;
+    const BoundaryDiagnostics& boundary_diagnostics() const { return boundary_diagnostics_; }
     void write_vtk(const std::string& path) const;
     FoamSnapshot openfoam_snapshot() const;
     // 用宏观初始场构造平衡分布，不代表非平衡分布的断点续算。
@@ -50,6 +54,10 @@ private:
     Solver3DConfig config_;
     std::vector<GeometryCell> geometry_cells_;
     bool masked_flow_initialized_ = false;
+    std::vector<WallNode> wall_nodes_;
+    BoundaryDiagnostics boundary_diagnostics_{};
+    std::array<double,3> origin_{}, spacing_{1,1,1};
+    UnitScale units_{};
 
     void set_equilibrium_cell(int x, int y, int z, double rho, double ux, double uy, double uz);
     void collide(bool fluid_only);

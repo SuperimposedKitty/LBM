@@ -16,6 +16,7 @@ constexpr double pi = 3.141592653589793238462643383279502884;
 Solver3D::Solver3D(int nx, int ny, int nz, Solver3DConfig config)
     : grid_(nx, ny, nz, config.lattice_model),
       config_(config) {
+    detail::validate_flow_options(config_.flow, false);
     detail::validate_collision_parameters3d(
         config_.collision_model, config_.tau, config_.mrt);
     if (!std::isfinite(config_.initial_rho) || config_.initial_rho <= 0.0) {
@@ -44,6 +45,8 @@ void Solver3D::initialize_shear_wave(double amplitude, int mode) {
     }
     masked_flow_initialized_ = false;
     geometry_cells_.clear();
+    wall_nodes_.clear();
+    origin_={}; spacing_={1,1,1}; units_={}; boundary_diagnostics_={};
     std::fill(grid_.solid.begin(), grid_.solid.end(), std::uint8_t{0});
     for (int z = 0; z < grid_.nz; ++z) {
         for (int y = 0; y < grid_.ny; ++y) {
@@ -63,6 +66,8 @@ void Solver3D::initialize_lid_driven_cavity(double lid_velocity) {
     }
     masked_flow_initialized_ = false;
     geometry_cells_.clear();
+    wall_nodes_.clear();
+    origin_={}; spacing_={1,1,1}; units_={}; boundary_diagnostics_={};
     for (int z = 0; z < grid_.nz; ++z) {
         for (int y = 0; y < grid_.ny; ++y) {
             for (int x = 0; x < grid_.nx; ++x) {
@@ -97,6 +102,8 @@ void Solver3D::initialize_masked_flow(
     }
 
     geometry_cells_ = mask.cells();
+    origin_={}; spacing_={1,1,1}; units_={}; boundary_diagnostics_={};
+    wall_nodes_.assign(grid_.rho.size(),{});
     masked_flow_initialized_ = true;
     for (int z = 0; z < grid_.nz; ++z) {
         for (int y = 0; y < grid_.ny; ++y) {
@@ -115,6 +122,8 @@ void Solver3D::initialize_masked_flow(
                         "Each 3D outlet must connect to a fluid cell on its left.");
                 }
                 grid_.solid[s] = cell == GeometryCell::Solid ? 1 : 0;
+                wall_nodes_[s].obstacle = grid_.solid[s] && x>0 && x<grid_.nx-1 &&
+                    y>0 && y<grid_.ny-1 && z>0 && z<grid_.nz-1;
                 set_equilibrium_cell(
                     x,
                     y,
@@ -176,6 +185,7 @@ void Solver3D::run_lid_driven_cavity(int steps, double lid_velocity) {
 
 Diagnostics3D Solver3D::diagnostics() const {
     Diagnostics3D diagnostics{};
+    diagnostics.boundary = boundary_diagnostics_;
     for (std::size_t s = 0; s < grid_.rho.size(); ++s) {
         if (grid_.solid[s]) {
             continue;
@@ -224,9 +234,11 @@ void Solver3D::set_equilibrium_cell(
     grid_.ux[s] = ux;
     grid_.uy[s] = uy;
     grid_.uz[s] = uz;
+    const auto force = grid_.solid[s] ? std::array<double,3>{} : detail::total_force(config_.flow,rho);
+    const auto source = detail::guo_source3d(config_.lattice_model,ux,uy,uz,force[0],force[1],force[2]);
     for (int q = 0; q < grid_.q; ++q) {
         grid_.f[grid_.dist_index(x, y, z, q)] =
-            detail::equilibrium3d(config_.lattice_model, q, rho, ux, uy, uz);
+            detail::equilibrium3d(config_.lattice_model, q, rho, ux, uy, uz) - 0.5*source[q];
     }
 }
 
@@ -242,6 +254,9 @@ void Solver3D::collide(bool fluid_only) {
                 for (int q = 0; q < grid_.q; ++q) {
                     population[q] = grid_.f[grid_.dist_index(x, y, z, q)];
                 }
+                const auto force = detail::total_force(config_.flow,grid_.rho[s]);
+                const auto source = detail::guo_source3d(config_.lattice_model,
+                    grid_.ux[s],grid_.uy[s],grid_.uz[s],force[0],force[1],force[2]);
                 detail::collide_population3d(
                     config_.lattice_model,
                     population,
@@ -251,7 +266,7 @@ void Solver3D::collide(bool fluid_only) {
                     grid_.uz[s],
                     config_.tau,
                     config_.collision_model,
-                    config_.mrt);
+                    config_.mrt, source);
                 for (int q = 0; q < grid_.q; ++q) {
                     grid_.f[grid_.dist_index(x, y, z, q)] = population[q];
                 }
@@ -320,6 +335,7 @@ void Solver3D::stream_lid_driven_cavity(double lid_velocity) {
 void Solver3D::stream_masked_flow() {
     const auto& lattice = lattice3d(config_.lattice_model);
     std::fill(grid_.f_next.begin(), grid_.f_next.end(), 0.0);
+    boundary_diagnostics_ = {};
     for (int z = 0; z < grid_.nz; ++z) {
         for (int y = 0; y < grid_.ny; ++y) {
             for (int x = 0; x < grid_.nx; ++x) {
@@ -327,14 +343,50 @@ void Solver3D::stream_masked_flow() {
                     continue;
                 }
                 for (int q = 0; q < grid_.q; ++q) {
-                    const int dx = x + lattice.cx[q];
+                    int dx = x + lattice.cx[q];
                     const int dy = y + lattice.cy[q];
-                    const int dz = z + lattice.cz[q];
+                    int dz = z + lattice.cz[q];
+                    if (config_.flow.periodic_x) dx = (dx+grid_.nx)%grid_.nx;
+                    if (config_.flow.periodic_z) dz = (dz+grid_.nz)%grid_.nz;
                     if (is_outside(dx, dy, dz) ||
                         grid_.solid[grid_.scalar_index(dx, dy, dz)]) {
-                        grid_.f_next[grid_.dist_index(
-                            x, y, z, lattice.opposite[q])] +=
-                            grid_.f[grid_.dist_index(x, y, z, q)];
+                        const auto s = grid_.scalar_index(x,y,z);
+                        const int opposite = lattice.opposite[q];
+                        const double outgoing = grid_.f[grid_.dist_index(x,y,z,q)];
+                        double fraction = 0.5, behind = outgoing, correction = 0;
+                        const WallNode* wall = !is_outside(dx,dy,dz) && !wall_nodes_.empty()
+                            ? &wall_nodes_[grid_.scalar_index(dx,dy,dz)] : nullptr;
+                        if (wall) {
+                            correction = 6*lattice.w[q]*grid_.rho[s]*(lattice.cx[q]*wall->velocity[0]+
+                                lattice.cy[q]*wall->velocity[1]+lattice.cz[q]*wall->velocity[2]);
+                            const auto& here = wall_nodes_[s];
+                            if (config_.flow.interpolated_walls && here.distance_known &&
+                                wall->distance_known && here.distance>0 && wall->distance<=0)
+                                fraction = here.distance/(here.distance-wall->distance);
+                        }
+                        if (fraction < 0.5) {
+                            int bx=x-lattice.cx[q], by=y-lattice.cy[q], bz=z-lattice.cz[q];
+                            if (config_.flow.periodic_x) bx=(bx+grid_.nx)%grid_.nx;
+                            if (config_.flow.periodic_z) bz=(bz+grid_.nz)%grid_.nz;
+                            if (!is_outside(bx,by,bz) && !grid_.solid[grid_.scalar_index(bx,by,bz)])
+                                behind=grid_.f[grid_.dist_index(bx,by,bz,q)];
+                            else {fraction=0.5; ++boundary_diagnostics_.interpolation_fallbacks;}
+                        }
+                        const double incoming=detail::reflected_population(outgoing,
+                            grid_.f[grid_.dist_index(x,y,z,opposite)],behind,fraction,correction);
+                        grid_.f_next[grid_.dist_index(x,y,z,opposite)] += incoming;
+                        const bool open_face = is_outside(dx,dy,dz) && !geometry_cells_.empty() &&
+                            ((dx<0 && geometry_cells_[s]==GeometryCell::Inlet) ||
+                             (dx>=grid_.nx && geometry_cells_[s]==GeometryCell::Outlet));
+                        if (!open_face) {
+                            boundary_diagnostics_.wall_mass_exchange += incoming-outgoing;
+                            const int direction[3]={lattice.cx[q],lattice.cy[q],lattice.cz[q]};
+                            for (int d=0; d<3; ++d) {
+                                const double f=(outgoing+incoming)*direction[d];
+                                boundary_diagnostics_.wall_force[d]+=f;
+                                if (wall && wall->obstacle) boundary_diagnostics_.obstacle_force[d]+=f;
+                            }
+                        }
                     } else {
                         grid_.f_next[grid_.dist_index(dx, dy, dz, q)] +=
                             grid_.f[grid_.dist_index(x, y, z, q)];
@@ -353,7 +405,19 @@ void Solver3D::apply_masked_boundaries(double inlet_velocity) {
             for (int x = 0; x < grid_.nx; ++x) {
                 const std::size_t s = grid_.scalar_index(x, y, z);
                 const GeometryCell cell = geometry_cells_[s];
-                if (cell == GeometryCell::Inlet) {
+                if (cell!=GeometryCell::Inlet && cell!=GeometryCell::Outlet) continue;
+                double before=0;
+                for (int q=0; q<grid_.q; ++q) before+=grid_.f[grid_.dist_index(x,y,z,q)];
+                if (config_.flow.open_boundary==OpenBoundaryModel::VelocityPressure) {
+                    detail::D3Population f{};
+                    for (int q=0; q<grid_.q; ++q) f[q]=grid_.f[grid_.dist_index(x,y,z,q)];
+                    const auto source=grid_.scalar_index(cell==GeometryCell::Inlet?x+1:x-1,y,z);
+                    const double scale=wall_nodes_.empty()?1:wall_nodes_[s].inlet_scale;
+                    detail::reconstruct_x_boundary(f,lattice,config_.flow,cell==GeometryCell::Inlet,
+                        {inlet_velocity*scale,cell==GeometryCell::Inlet?0:grid_.uy[source],
+                                              cell==GeometryCell::Inlet?0:grid_.uz[source]});
+                    for (int q=0; q<grid_.q; ++q) grid_.f[grid_.dist_index(x,y,z,q)]=f[q];
+                } else if (cell == GeometryCell::Inlet) {
                     const int source_x = 1;
                     double rho = 0.0;
                     double jx = 0.0;
@@ -397,6 +461,9 @@ void Solver3D::apply_masked_boundaries(double inlet_velocity) {
                             grid_.f[grid_.dist_index(grid_.nx - 2, y, z, q)];
                     }
                 }
+                double after=0;
+                for (int q=0; q<grid_.q; ++q) after+=grid_.f[grid_.dist_index(x,y,z,q)];
+                boundary_diagnostics_.mass_exchange+=after-before;
             }
         }
     }
@@ -431,9 +498,10 @@ void Solver3D::compute_macroscopic(bool fluid_only, double lid_velocity) {
                         "Non-physical density encountered in Solver3D.");
                 }
                 grid_.rho[s] = rho;
-                grid_.ux[s] = jx / rho;
-                grid_.uy[s] = jy / rho;
-                grid_.uz[s] = jz / rho;
+                const auto force=detail::total_force(config_.flow,rho);
+                grid_.ux[s] = (jx+0.5*force[0]) / rho;
+                grid_.uy[s] = (jy+0.5*force[1]) / rho;
+                grid_.uz[s] = (jz+0.5*force[2]) / rho;
             }
         }
     }
@@ -451,12 +519,18 @@ FoamSnapshot Solver3D::openfoam_snapshot() const {
     snapshot.nz = grid_.nz;
     snapshot.two_dimensional = false;
     snapshot.two_phase = false;
+    snapshot.origin=origin_; snapshot.spacing=spacing_; snapshot.units=units_;
     snapshot.cells.resize(grid_.rho.size());
     for (std::size_t i = 0; i < snapshot.cells.size(); ++i) {
         auto& cell = snapshot.cells[i];
         cell.solid = grid_.solid[i] != 0;
         cell.rho = grid_.rho[i];
         cell.velocity = {grid_.ux[i], grid_.uy[i], grid_.uz[i]};
+        if (wall_nodes_.size()==snapshot.cells.size()) {
+            cell.wall_distance=wall_nodes_[i].distance; cell.wall_distance_known=wall_nodes_[i].distance_known;
+            cell.obstacle=wall_nodes_[i].obstacle; cell.inlet_scale=wall_nodes_[i].inlet_scale;
+            if (cell.solid) cell.velocity=wall_nodes_[i].velocity;
+        }
         if (geometry_cells_.size() == snapshot.cells.size()) {
             cell.boundary = geometry_cells_[i] == GeometryCell::Inlet ? 1 :
                             (geometry_cells_[i] == GeometryCell::Outlet ? 2 : 0);
@@ -472,6 +546,8 @@ void Solver3D::initialize_fields(const FoamSnapshot& input) {
         input.cells.size() != grid_.rho.size())
         throw std::invalid_argument("Imported fields do not match solver dimensions/model.");
     geometry_cells_.resize(input.cells.size());
+    origin_=input.origin; spacing_=input.spacing; units_=input.units; boundary_diagnostics_={};
+    wall_nodes_.resize(input.cells.size());
     masked_flow_initialized_ = true;
     for (int z = 0; z < grid_.nz; ++z) {
         for (int y = 0; y < grid_.ny; ++y) {
@@ -479,6 +555,8 @@ void Solver3D::initialize_fields(const FoamSnapshot& input) {
                 const auto i = grid_.scalar_index(x, y, z);
                 const auto& cell = input.cells[i];
                 grid_.solid[i] = cell.solid ? 1 : 0;
+                wall_nodes_[i] = {cell.wall_distance,cell.wall_distance_known,cell.obstacle,
+                                  cell.solid?cell.velocity:std::array<double,3>{},cell.inlet_scale};
                 geometry_cells_[i] = cell.solid ? GeometryCell::Solid :
                     (cell.boundary == 1 ? GeometryCell::Inlet :
                      (cell.boundary == 2 ? GeometryCell::Outlet : GeometryCell::Fluid));

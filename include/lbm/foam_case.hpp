@@ -19,11 +19,18 @@ struct FoamCase {
     int steps = 100;
     int write_interval = 10;
     double inlet_velocity = 0.0;
+    double reference_length = 0.0;
+    double max_mach = 0.15;
+    double density_warning = 0.01;
+    bool parabolic_inlet = false;
+    double inlet_ramp_steps = 0.0;
 };
 
 FoamCase read_foam_case(const std::filesystem::path &path);
 void block_mesh_case(const std::filesystem::path &path);
 void set_fields_case(const std::filesystem::path &path);
 void solve_foam_case(const std::filesystem::path &path);
+void refine_foam_case(const std::filesystem::path& source,
+                      const std::filesystem::path& target, int factor);
 
 } // namespace lbm

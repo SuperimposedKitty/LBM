@@ -5,6 +5,7 @@
 #include "lbm/collision.hpp"
 #include "lbm/geometry_mask.hpp"
 #include "lbm/grid.hpp"
+#include "lbm/single_phase.hpp"
 
 #include <string>
 #include <vector>
@@ -17,11 +18,13 @@ struct SolverConfig {
     double initial_rho = 1.0;
     CollisionModel collision_model = CollisionModel::MRT;
     MrtRelaxationRates mrt{};
+    SinglePhaseOptions flow{};
 };
 
 struct Diagnostics {
     double mass = 0.0;
     double max_speed = 0.0;
+    BoundaryDiagnostics boundary{};
 };
 
 class Solver {
@@ -40,6 +43,7 @@ public:
     void run(int steps);
     void run_lid_driven_cavity(int steps, double lid_velocity);
     Diagnostics diagnostics() const;
+    const BoundaryDiagnostics& boundary_diagnostics() const { return boundary_diagnostics_; }
     void write_csv(const std::string& path) const;
     void write_vtk(const std::string& path) const;
     FoamSnapshot openfoam_snapshot() const;
@@ -51,11 +55,16 @@ private:
     SolverConfig config_;
     std::vector<GeometryCell> geometry_cells_;
     bool masked_flow_initialized_ = false;
+    std::vector<WallNode> wall_nodes_;
+    BoundaryDiagnostics boundary_diagnostics_{};
+    std::array<double,3> origin_{}, spacing_{1,1,1};
+    UnitScale units_{};
 
     static double equilibrium(int direction, double rho, double ux, double uy);
     void collide();
     void collide_fluid_only();
     void collide_cell(int x, int y);
+    void set_equilibrium_cell(int x, int y, double rho, double ux, double uy);
     void stream_periodic();
     void stream_lid_driven_cavity(double lid_velocity);
     void stream_masked_flow();

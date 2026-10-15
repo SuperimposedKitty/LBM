@@ -96,9 +96,11 @@ void verify(const std::filesystem::path& path, const lbm::FoamSnapshot& s) {
     require((bounds.find("type empty")!=std::string::npos)==s.two_dimensional, "Wrong empty patch");
     auto rho=field(path/"0"/"rho"), pressure=field(path/"0"/"p"), velocity=field(path/"0"/"U");
     auto speed=field(path/"0"/"speed"), vorticity=field(path/"0"/"vorticity");
+    auto divergence=field(path/"0"/"divergence");
     require(rho[0]==count && rho.size()==count+1, "Scalar field count");
     require(velocity[0]==count && velocity.size()==3*count+1, "Vector field count");
     require(speed[0]==count && speed.size()==count+1, "Speed field count");
+    require(divergence[0]==count && divergence.size()==count+1,"Divergence field count");
     require(vorticity[0]==count && vorticity.size()==3*count+1, "Vorticity field count");
     int j=0;
     for (const auto& c : s.cells) {
@@ -183,11 +185,13 @@ int main() {
                 shear.cells[y*5+x].velocity[1]=0.01*x;
         check("shear",shear);
         auto curl=field(base/"shear"/"0"/"vorticity");
+        auto div=field(base/"shear"/"0"/"divergence");
         for (int i=0; i<25; ++i) {
             require(std::abs(curl[1+3*i])<1e-14 &&
                         std::abs(curl[2+3*i])<1e-14 &&
                         std::abs(curl[3+3*i]-0.01)<1e-14,
                     "Analytic curl mismatch");
+            require(std::abs(div[1+i])<1e-14,"Analytic divergence mismatch");
         }
         // 重跑使用同一目录，较短的新计算不能残留旧时间步或旧两相场。
         const auto repeat = base / "overwrite";

@@ -1,0 +1,11 @@
+FoamFile
+{
+ version 2.0;
+ format ascii;
+ class dictionary;
+ object lbmGeometry;
+}
+solids
+(
+ cylinder { centre (8 6 0.5); radius 2; axis (0 0 1); }
+);

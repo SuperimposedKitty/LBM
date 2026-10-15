@@ -1,0 +1,23 @@
+FoamFile
+{
+ version 2.0;
+ format ascii;
+ class dictionary;
+ object setFieldsDict;
+}
+defaultFieldValues
+(
+ volVectorFieldValue U (0 0 0)
+ volScalarFieldValue p 0
+ volScalarFieldValue porosity 1
+ volScalarFieldValue solid 0
+);
+regions
+(
+ sphereToCell
+ {
+  centre (0.008 0.006 0.0005);
+  radius 0.002;
+  fieldValues (volScalarFieldValue solid 1);
+ }
+);

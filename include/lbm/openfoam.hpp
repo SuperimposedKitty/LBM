@@ -3,6 +3,7 @@
 #include <array>
 #include <filesystem>
 #include <vector>
+#include "lbm/units.hpp"
 
 namespace lbm {
 
@@ -15,6 +16,10 @@ struct FoamCell {
     double rho_a = 0.0;
     double rho_b = 0.0;
     double porosity = 1.0;
+    double wall_distance = 0.0;
+    bool wall_distance_known = false;
+    bool obstacle = false;
+    double inlet_scale = 1.0;
 };
 
 struct FoamSnapshot {
@@ -26,10 +31,14 @@ struct FoamSnapshot {
     // 格点 (0,0,0) 的坐标和网格步长；场值仍使用格子单位。
     std::array<double, 3> origin{0.0, 0.0, 0.0};
     std::array<double, 3> spacing{1.0, 1.0, 1.0};
+    UnitScale units{};
 };
 
 // 文件导入与公开初始化接口共用校验，失败时不修改求解器状态。
 void validate_initial_snapshot(const FoamSnapshot& snapshot);
+namespace detail {
+double velocity_derivative(const FoamSnapshot& snapshot, std::size_t id, int axis, int component);
+}
 
 // 原生 OpenFOAM 后处理案例，不包含可用于续算的有限体积求解器设置。
 class OpenFoamWriter {

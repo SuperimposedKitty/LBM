@@ -8,6 +8,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <chrono>
 #include <map>
 #include <set>
 #include <sstream>
@@ -225,7 +226,8 @@ struct Field {
     std::vector<Vec> data;
     Dict patches;
 };
-Field read_field(const std::filesystem::path &p, int components, std::size_t count) {
+Field read_field(const std::filesystem::path &p, int components, std::size_t count,
+                 bool physical = false) {
     Cursor c(tokenize(p));
     c.expect("FoamFile");
     auto h = Cursor(c.group("{", "}")).dict();
@@ -233,10 +235,33 @@ Field read_field(const std::filesystem::path &p, int components, std::size_t cou
     need(word(h, "class") == (components == 3 ? "volVectorField" : "volScalarField"),
          "Wrong field class: " + p.string());
     auto d = c.dict();
-    need(required(d, "dimensions") == Tokens{"[", "0", "0", "0", "0", "0", "0", "0", "]"},
-         "Fields must use dimensionless lattice units: " + p.string());
+    Tokens dimensions{"[", "0", "0", "0", "0", "0", "0", "0", "]"};
+    const auto name = word(h,"object");
+    if (physical && name=="U") dimensions={"[","0","1","-1","0","0","0","0","]"};
+    if (physical && name=="rho") dimensions={"[","1","-3","0","0","0","0","0","]"};
+    if (physical && name=="p") dimensions={"[","1","-1","-2","0","0","0","0","]"};
+    need(required(d, "dimensions") == dimensions, "Unexpected field dimensions: " + p.string());
     return {d, values(required(d, "internalField"), components, count),
             Cursor(required(d, "boundaryField")).dict()};
+}
+
+template<class Transform> void transform_field(Field& field, int components, Transform transform) {
+    for (auto& v : field.data) v=transform(v);
+    for (auto& entry : field.patches) {
+        auto b=Cursor(entry.second).dict();
+        if (word(b,"type")!="fixedValue") continue;
+        const auto v=transform(values(required(b,"value"),components,1)[0]);
+        Tokens result{"type","fixedValue",";","value","uniform"};
+        if (components==3) result.push_back("(");
+        for (int d=0; d<components; ++d) {
+            std::ostringstream out;
+            out << std::setprecision(17) << v[d];
+            result.push_back(out.str());
+        }
+        if (components==3) result.push_back(")");
+        result.push_back(";");
+        entry.second=std::move(result);
+    }
 }
 std::vector<int> labels(const std::filesystem::path &p) {
     Cursor c(tokenize(p));
@@ -406,11 +431,73 @@ Mesh mesh_read(const std::filesystem::path &path) {
     return m;
 }
 
+struct AnalyticSolid {
+    std::string type;
+    Vec centre{}, axis{0,0,1}, lo{}, hi{};
+    double radius=0;
+    double distance(Vec p) const {
+        if (type=="box") {
+            double outside=0, inside=-1e100;
+            for (int d=0; d<3; ++d) {
+                const double v=std::max(lo[d]-p[d],p[d]-hi[d]);
+                outside+=std::max(v,0.0)*std::max(v,0.0);
+                inside=std::max(inside,v);
+            }
+            return std::sqrt(outside)+std::min(inside,0.0);
+        }
+        double squared=0, parallel=0;
+        for (int d=0; d<3; ++d) {p[d]-=centre[d]; squared+=p[d]*p[d]; parallel+=p[d]*axis[d];}
+        if (type=="cylinder") squared-=parallel*parallel;
+        return std::sqrt(std::max(squared,0.0))-radius;
+    }
+};
+
+std::vector<AnalyticSolid> read_geometry(const std::filesystem::path& path) {
+    const auto file=path/"constant"/"lbmGeometry";
+    if (!std::filesystem::exists(file)) return {};
+    auto dict=dictionary(file);
+    known(dict,{"solids"});
+    Cursor cursor(required(dict,"solids"));
+    cursor.expect("(");
+    std::vector<AnalyticSolid> solids;
+    while (!cursor.take(")")) {
+        AnalyticSolid shape;
+        shape.type=cursor.get();
+        auto d=Cursor(cursor.group("{","}")).dict();
+        if (shape.type=="box") {
+            known(d,{"min","max"});
+            Cursor a(required(d,"min")),b(required(d,"max"));
+            shape.lo=a.vec(); shape.hi=b.vec();
+            need(a.i==a.t.size() && b.i==b.t.size(),"Invalid box coordinates");
+            for (int k=0; k<3; ++k) need(shape.hi[k]>shape.lo[k],"Invalid solid box");
+        } else {
+            need(shape.type=="sphere" || shape.type=="cylinder","Unknown analytic solid");
+            known(d,{"centre","radius","axis"});
+            Cursor p(required(d,"centre")); shape.centre=p.vec();
+            need(p.i==p.t.size(),"Invalid solid centre");
+            shape.radius=number(d,"radius",-1);
+            need(shape.radius>0,"Solid radius must be positive");
+            if (d.count("axis")) {
+                need(shape.type=="cylinder","Only cylinders use an axis");
+                Cursor a(d.at("axis")); shape.axis=a.vec();
+                need(a.i==a.t.size(),"Invalid cylinder axis");
+                double norm=std::sqrt(shape.axis[0]*shape.axis[0]+shape.axis[1]*shape.axis[1]+shape.axis[2]*shape.axis[2]);
+                need(norm>0,"Cylinder axis cannot be zero");
+                for (auto& v:shape.axis) v/=norm;
+            }
+        }
+        solids.push_back(shape);
+    }
+    need(cursor.i==cursor.t.size(),"Extra geometry tokens");
+    return solids;
+}
+
 void configure(FoamCase &c, const std::filesystem::path &path) {
     auto d = dictionary(path / "system" / "lbmDict");
     known(d, {"model", "lattice", "collision", "tau", "tauA", "tauB", "interactionStrength",
               "contactAngle", "wallAdhesion", "recoloring", "bodyForce", "poreDiameter",
-              "darcyDrag", "forchheimerDrag"});
+              "darcyDrag", "forchheimerDrag", "acceleration", "openBoundary", "wallBoundary",
+              "inletProfile", "maxMach", "densityWarning", "referenceLength", "inletRampTime"});
     const auto model = word(d, "model", "singlePhase"), lattice = word(d, "lattice", "D2Q9"),
                collision = word(d, "collision", "MRT");
     need(model == "singlePhase" || model == "twoPhase", "Unknown LBM model");
@@ -423,6 +510,24 @@ void configure(FoamCase &c, const std::filesystem::path &path) {
     c.single3d.lattice_model = c.two3d.lattice_model =
         lattice == "D3Q27" ? Lattice3DModel::D3Q27 : Lattice3DModel::D3Q19;
     c.single.tau = c.single3d.tau = number(d, "tau", 0.8);
+    const auto open=word(d,"openBoundary","legacy"), wall=word(d,"wallBoundary","halfway"),
+               profile=word(d,"inletProfile","uniform");
+    need(open=="legacy" || open=="velocityPressure","Unknown openBoundary");
+    need(wall=="halfway" || wall=="interpolated","Unknown wallBoundary");
+    need(profile=="uniform" || profile=="parabolic","Unknown inletProfile");
+    need(!c.initial.two_phase || (open=="legacy" && wall=="halfway" && profile=="uniform"),
+         "Precision boundary options currently require singlePhase");
+    need(profile=="uniform" || c.initial.two_dimensional,"Parabolic inlet currently requires D2Q9");
+    need(profile=="uniform" || open=="velocityPressure","Parabolic inlet requires velocityPressure");
+    c.single.flow.open_boundary=c.single3d.flow.open_boundary=
+        open=="legacy"?OpenBoundaryModel::Legacy:OpenBoundaryModel::VelocityPressure;
+    c.single.flow.interpolated_walls=c.single3d.flow.interpolated_walls=wall=="interpolated";
+    c.parabolic_inlet=profile=="parabolic";
+    c.max_mach=number(d,"maxMach",0.15);
+    c.density_warning=number(d,"densityWarning",0.01);
+    c.reference_length=number(d,"referenceLength",0);
+    need(c.max_mach>0 && c.max_mach<0.5 && c.density_warning>0 && c.reference_length>=0,
+         "Invalid precision diagnostic controls");
     c.two.tau_a = c.two3d.tau_a = number(d, "tauA", 1);
     c.two.tau_b = c.two3d.tau_b = number(d, "tauB", 1);
     c.initial.interaction_strength = c.two.interaction_strength = c.two3d.interaction_strength =
@@ -440,19 +545,46 @@ void configure(FoamCase &c, const std::filesystem::path &path) {
         force = v.vec();
         need(v.i == v.t.size(), "Invalid bodyForce");
     }
-    need(c.initial.two_phase || force == Vec{}, "Single-phase body force is not implemented");
+    c.single.flow.force_density=c.single3d.flow.force_density=force;
+    Vec acceleration{};
+    if (d.count("acceleration")) {
+        Cursor a(d.at("acceleration")); acceleration=a.vec();
+        need(a.i==a.t.size(),"Invalid acceleration");
+    }
+    need(!c.initial.two_phase || acceleration==Vec{},"Two-phase acceleration option is not implemented");
+    c.single.flow.acceleration=c.single3d.flow.acceleration=acceleration;
     need(!c.initial.two_dimensional || force[2] == 0, "D2Q9 cannot use z force");
     c.two.body_force_x = c.two3d.body_force_x = force[0];
     c.two.body_force_y = c.two3d.body_force_y = force[1];
     c.two3d.body_force_z = force[2];
+    auto& units=c.initial.units;
+    const auto physical=path/"constant"/"lbmProperties";
+    if (std::filesystem::exists(physical)) {
+        auto p=dictionary(physical);
+        known(p,{"referenceDensity","kinematicViscosity","referencePressure","referenceLength"});
+        need(!c.initial.two_phase,"SI conversion currently requires singlePhase");
+        need(!d.count("tau"),"SI tau is derived from viscosity and deltaT; remove tau");
+        units.si=true;
+        units.density_scale=number(p,"referenceDensity",-1);
+        units.kinematic_viscosity=number(p,"kinematicViscosity",-1);
+        units.reference_pressure=number(p,"referencePressure",0);
+        units.reference_length=number(p,"referenceLength",c.reference_length);
+    }
     auto control = dictionary(path / "system" / "controlDict");
-    need(number(control, "startTime", 0) == 0 && number(control, "deltaT", 1) == 1 &&
+    units.time_step=number(control,"deltaT",1);
+    need(number(control, "startTime", 0) == 0 && (units.si || units.time_step == 1) &&
              word(control, "startFrom", "startTime") == "startTime",
-         "Only startTime 0 and lattice deltaT 1 are supported");
+         "Use startTime 0; lattice mode requires deltaT 1");
+    units.validate();
+    c.inlet_ramp_steps=number(d,"inletRampTime",0)/units.time_step;
+    need(c.inlet_ramp_steps>=0,"inletRampTime cannot be negative");
+    need(!c.initial.two_phase || c.inlet_ramp_steps==0,"Inlet ramp currently requires singlePhase");
     need(word(control, "writeControl", "timeStep") == "timeStep", "Use writeControl timeStep");
     need(word(control, "stopAt", "endTime") == "endTime", "Use stopAt endTime");
     need(word(control, "writeFormat", "ascii") == "ascii", "Only ASCII output is supported");
-    c.steps = integer(number(control, "endTime", 100), "endTime");
+    const double requested_steps=number(control,"endTime",100)/units.time_step;
+    need(near(requested_steps,std::round(requested_steps)),"endTime must be a multiple of deltaT");
+    c.steps = integer(std::round(requested_steps), "endTime/deltaT");
     c.write_interval = integer(number(control, "writeInterval", 10), "writeInterval", true);
 }
 } // namespace
@@ -463,27 +595,40 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
     const auto mesh = mesh_read(path);
     auto &s = c.initial;
     need(s.two_dimensional == mesh.two_d, "Mesh empty patches do not match selected lattice");
-    auto u = read_field(path / "0" / "U", 3, mesh.centers.size());
-    const bool has_rho = std::filesystem::exists(path / "0" / "rho");
-    auto rho = read_field(path / "0" / (has_rho ? "rho" : "p"), 1, mesh.centers.size());
-    if (!has_rho) {
-        for (auto &v : rho.data)
-            v[0] *= 3;
-        // p 是理想部分压强，固定值边界同样由 rho=3p 转换。
-        for (auto &entry : rho.patches) {
-            auto b = Cursor(entry.second).dict();
-            if (word(b, "type") == "fixedValue") {
-                double r = 3 * values(required(b, "value"), 1, 1)[0][0];
-                std::ostringstream text;
-                text << std::setprecision(17) << r;
-                entry.second = {"type", "fixedValue", ";", "value", "uniform", text.str(), ";"};
-            }
+    auto& units=s.units;
+    if (units.si) {
+        units.length_step=mesh.spacing[0]; units.validate();
+        c.single.tau=c.single3d.tau=0.5+3*units.kinematic_viscosity*units.time_step/
+                                              (units.length_step*units.length_step);
+        const double force_scale=units.time_step*units.time_step/(units.density_scale*units.length_step);
+        const double acceleration_scale=units.time_step*units.time_step/units.length_step;
+        for (int d=0; d<3; ++d) {
+            c.single.flow.force_density[d]*=force_scale;
+            c.single.flow.acceleration[d]*=acceleration_scale;
         }
-    } else if (std::filesystem::exists(path / "0" / "p")) {
-        auto pressure = read_field(path / "0" / "p", 1, mesh.centers.size());
+        c.single3d.flow=c.single.flow;
+    }
+    auto u = read_field(path / "0" / "U", 3, mesh.centers.size(),units.si);
+    transform_field(u,3,[&](Vec v) {for(auto& a:v) a/=units.velocity_scale(); return v;});
+    const bool has_rho = std::filesystem::exists(path / "0" / "rho");
+    auto rho = read_field(path / "0" / (has_rho ? "rho" : "p"), 1, mesh.centers.size(),units.si);
+    transform_field(rho,1,[&](Vec v) {
+        v[0]=has_rho?v[0]/(units.si?units.density_scale:1):units.rho_from_pressure(v[0]); return v;
+    });
+    if (has_rho && std::filesystem::exists(path / "0" / "p")) {
+        auto pressure = read_field(path / "0" / "p", 1, mesh.centers.size(),units.si);
         for (std::size_t i = 0; i < rho.data.size(); ++i)
-            need(near(rho.data[i][0], 3 * pressure.data[i][0]),
-                 "Initial p and rho disagree (rho=3p)");
+            need(near(rho.data[i][0], units.rho_from_pressure(pressure.data[i][0])),
+                 "Initial p and rho disagree with the reference equation of state");
+        for (const auto& entry:rho.patches) {
+            const auto rb=Cursor(entry.second).dict();
+            const auto pb=Cursor(required(pressure.patches,entry.first)).dict();
+            need(word(rb,"type")==word(pb,"type"),"p/rho boundary types disagree");
+            if (word(rb,"type")=="fixedValue")
+                need(near(values(required(rb,"value"),1,1)[0][0],
+                          units.rho_from_pressure(values(required(pb,"value"),1,1)[0][0])),
+                     "p/rho boundary values disagree");
+        }
     }
     Field alpha, porosity, solid;
     if (s.two_phase)
@@ -565,13 +710,34 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
             const double value = solid.data[i][0];
             need(near(value, 0) || near(value, 1), "solid must contain only 0 or 1");
             s.cells[c.cell_order[i]].solid = near(value, 1);
+            s.cells[c.cell_order[i]].obstacle = near(value, 1);
         }
         need(std::any_of(s.cells.begin(), s.cells.end(),
                          [](const FoamCell &cell) { return !cell.solid; }),
              "solid field leaves no fluid cells");
     }
+    const auto geometry=read_geometry(path);
+    need(!c.single.flow.interpolated_walls || !geometry.empty(),
+         "Interpolated walls require constant/lbmGeometry");
+    for (std::size_t id=0; id<s.cells.size() && !geometry.empty(); ++id) {
+        Vec point{s.origin[0]+(id%s.nx)*s.spacing[0],
+                  s.origin[1]+((id/s.nx)%s.ny)*s.spacing[1],
+                  s.origin[2]+(id/s.nx/s.ny)*s.spacing[2]};
+        double distance=1e100;
+        for (const auto& shape:geometry) distance=std::min(distance,shape.distance(point));
+        s.cells[id].wall_distance=distance;
+        s.cells[id].wall_distance_known=true;
+        if (distance<=0) {s.cells[id].solid=true; s.cells[id].obstacle=true;}
+    }
+    c.reference_length=units.si?units.reference_length:c.reference_length;
+    if (c.reference_length==0)
+        c.reference_length=geometry.empty()?(hi[1]-lo[1]+mesh.spacing[1]):
+                          (geometry.front().radius>0?2*geometry.front().radius:geometry.front().hi[1]-geometry.front().lo[1]);
+    c.reference_length/=mesh.spacing[0];
     bool inlet_seen = false, outlet_seen = false;
     double inlet_rho = 1, inlet_alpha = 1;
+    double outlet_rho=1;
+    const bool precision=c.single.flow.open_boundary==OpenBoundaryModel::VelocityPressure && !s.two_phase;
     for (const auto &patch : mesh.patches) {
         auto bc = Cursor(required(u.patches, patch.name)).dict();
         auto rb = Cursor(required(rho.patches, patch.name)).dict();
@@ -623,8 +789,9 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
                 auto v = values(required(bc, "value"), 3, 1)[0];
                 need(v[1] == 0 && v[2] == 0 && v[0] >= 0 && v[0] < 0.2,
                      "Inlet must have uniform +x velocity <0.2");
-                need(rt == "fixedValue", "Inlet rho requires fixedValue");
-                double r = values(required(rb, "value"), 1, 1)[0][0];
+                need(rt == (precision?"zeroGradient":"fixedValue"),
+                     "Inlet rho: velocityPressure uses zeroGradient; legacy uses fixedValue");
+                double r = precision?cell.rho:values(required(rb, "value"), 1, 1)[0][0];
                 need(r > 0, "Invalid inlet density");
                 double a = 1;
                 if (s.two_phase) {
@@ -641,9 +808,14 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
                 inlet_rho = r;
                 inlet_alpha = a;
                 cell.boundary = 1;
+                if (c.parabolic_inlet) {
+                    const double eta=(center[1]-lo[1]+0.5*mesh.spacing[1])/
+                                      (hi[1]-lo[1]+mesh.spacing[1]);
+                    cell.inlet_scale=6*eta*(1-eta);
+                }
             } else {
                 need(!cell.solid, "Outlet cannot be marked solid");
-                need(type == "zeroGradient" && rt == "zeroGradient" &&
+                need(type == "zeroGradient" && rt == (precision?"fixedValue":"zeroGradient") &&
                          (!s.two_phase || word(ab, "type") == "zeroGradient"),
                      "Unsupported outlet field condition");
                 need(same_position(center[0], hi[0], mesh.spacing[0]) && fc[0] > center[0] &&
@@ -651,6 +823,11 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
                          same_position(fc[2], center[2], mesh.spacing[2]),
                      "Outlet must be on right x face");
                 cell.boundary = 2;
+                if (precision) {
+                    double r=values(required(rb,"value"),1,1)[0][0];
+                    need(r>0 && (!outlet_seen || near(r,outlet_rho)),"Outlet densities must be positive and uniform");
+                    outlet_rho=r;
+                }
                 outlet_seen = true;
             }
         }
@@ -663,7 +840,8 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
             need(adjacent < s.cells.size() && !s.cells[adjacent].solid,
                  "Inlet/outlet needs adjacent fluid cell");
         }
-    c.single.initial_rho = c.single3d.initial_rho = inlet_rho;
+    c.single.initial_rho = c.single3d.initial_rho = precision?outlet_rho:inlet_rho;
+    c.single.flow.outlet_density=c.single3d.flow.outlet_density=outlet_rho;
     c.two.inlet_velocity = c.two3d.inlet_velocity = c.inlet_velocity;
     c.two.rho_high = c.two3d.rho_high = inlet_rho * inlet_alpha;
     c.two.rho_low = c.two3d.rho_low = open ? inlet_rho * (1 - inlet_alpha) : 0.02;
@@ -671,6 +849,42 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
 }
 
 namespace {
+struct FieldReport {
+    double mass=0, rho_min=1e100, rho_max=0, speed=0, energy=0, change=0, inlet=0, outlet=0;
+    double divergence_rms=0;
+};
+
+FieldReport field_report(const FoamSnapshot& s, const FoamSnapshot* previous=nullptr) {
+    FieldReport r;
+    double delta=0, norm=0, divergence2=0;
+    std::size_t fluid=0;
+    for (std::size_t i=0; i<s.cells.size(); ++i) {
+        const auto& cell=s.cells[i];
+        if (cell.solid) continue;
+        ++fluid;
+        double divergence=0;
+        for (int d=0; d<3; ++d) divergence+=detail::velocity_derivative(s,i,d,d);
+        divergence2+=divergence*divergence;
+        r.mass+=cell.rho;
+        r.rho_min=std::min(r.rho_min,cell.rho); r.rho_max=std::max(r.rho_max,cell.rho);
+        double speed2=0;
+        for (int d=0; d<3; ++d) {
+            speed2+=cell.velocity[d]*cell.velocity[d];
+            if (previous) {
+                const double diff=cell.velocity[d]-previous->cells[i].velocity[d];
+                delta+=diff*diff;
+            }
+        }
+        norm+=speed2; r.speed=std::max(r.speed,std::sqrt(speed2));
+        r.energy+=0.5*cell.rho*speed2;
+        if (cell.boundary==1) r.inlet+=cell.rho*cell.velocity[0];
+        if (cell.boundary==2) r.outlet+=cell.rho*cell.velocity[0];
+    }
+    r.change=previous?std::sqrt(delta/std::max(norm,1e-30)):0;
+    r.divergence_rms=s.units.velocity_scale()*std::sqrt(divergence2/std::max<std::size_t>(fluid,1));
+    return r;
+}
+
 template <class SolverType>
 void run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path &output) {
     solver.initialize_fields(c.initial);
@@ -678,18 +892,82 @@ void run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path
         auto s = solver.openfoam_snapshot();
         s.origin = c.initial.origin;
         s.spacing = c.initial.spacing;
+        s.units = c.initial.units;
         return s;
     };
-    OpenFoamWriter writer(output, snapshot());
-    writer.write(0, snapshot());
+    constexpr bool single=std::is_same_v<SolverType,Solver> || std::is_same_v<SolverType,Solver3D>;
+    auto previous=snapshot();
+    auto last=field_report(previous);
+    const double reference_speed=c.inlet_velocity>0?c.inlet_velocity:last.speed;
+    const double reference_rho=single?c.single.initial_rho:1;
+    const double area=previous.two_dimensional?c.reference_length:c.reference_length*c.reference_length;
+    const std::size_t fluid=std::count_if(previous.cells.begin(),previous.cells.end(),
+                                        [](const FoamCell& cell){return !cell.solid;});
+    std::cout << "units=" << (previous.units.si?"SI":"lattice") << " cells=" << fluid
+              << " steps=" << c.steps << " deltaT=" << previous.units.time_step;
+    if constexpr (single) {
+        const double tau=previous.two_dimensional?c.single.tau:c.single3d.tau;
+        std::cout << " tau=" << tau << " reference Re=" <<
+            reference_speed*c.reference_length/((tau-0.5)/3);
+    }
+    std::cout << "\nDiagnostics: lattice mass/rho/Mach; dU is relative to previous output interval\n";
+    if constexpr (single)
+        need(last.speed*std::sqrt(3.0)<=c.max_mach,"Initial Mach exceeds maxMach");
+    auto io_start=std::chrono::steady_clock::now();
+    OpenFoamWriter writer(output, previous);
+    writer.write(0, previous);
+    double io_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-io_start).count();
+    double compute_seconds=0, boundary_exchange=0, wall_exchange=0;
     for (int step = 1; step <= c.steps; ++step) {
+        auto tick=std::chrono::steady_clock::now();
         if constexpr (std::is_same_v<SolverType, Solver> || std::is_same_v<SolverType, Solver3D>)
-            solver.step_masked_flow(c.inlet_velocity);
+            solver.step_masked_flow(c.inlet_velocity*(c.inlet_ramp_steps>0?
+                0.5*(1-std::cos(3.14159265358979323846*std::min(1.0,step/c.inlet_ramp_steps))):1));
         else
             solver.step();
-        if (step % c.write_interval == 0 || step == c.steps)
-            writer.write(step, snapshot());
+        compute_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-tick).count();
+        if constexpr (single) {
+            const auto& d=solver.boundary_diagnostics();
+            boundary_exchange+=d.mass_exchange;
+            wall_exchange+=d.wall_mass_exchange;
+        }
+        if (step % c.write_interval == 0 || step == c.steps) {
+            auto current=snapshot();
+            const auto report=field_report(current,&previous);
+            const double mach=report.speed*std::sqrt(3.0);
+            std::cout << "step=" << step << " time=" << step*current.units.time_step
+                      << " mass=" << std::setprecision(12) << report.mass
+                      << " rho=[" << report.rho_min << ',' << report.rho_max << ']'
+                      << " Ma=" << mach << " dU=" << report.change
+                      << " divRMS=" << report.divergence_rms << " energyLU=" << report.energy
+                      << " flux(in,out)=" << report.inlet << ',' << report.outlet;
+            if constexpr (single) {
+                need(mach<=c.max_mach,"Computed Mach exceeds maxMach; reduce deltaT/velocity");
+                const auto d=solver.diagnostics();
+                const double balance=report.mass-last.mass-boundary_exchange-wall_exchange;
+                std::cout << " massBalance=" << balance << " wallMass=" << wall_exchange
+                          << " obstacleForce=(" << d.boundary.obstacle_force[0] << ','
+                          << d.boundary.obstacle_force[1] << ',' << d.boundary.obstacle_force[2] << ')';
+                if (reference_speed>0 && area>0) {
+                    const double scale=0.5*reference_rho*reference_speed*reference_speed*area;
+                    std::cout << " Cd_ref=" << d.boundary.obstacle_force[0]/scale
+                              << " Cl_ref=" << d.boundary.obstacle_force[1]/scale;
+                }
+                std::cout << " interpolationFallbacks=" << d.boundary.interpolation_fallbacks;
+                if (std::max(std::abs(report.rho_max-reference_rho),
+                             std::abs(report.rho_min-reference_rho))/reference_rho>c.density_warning)
+                    std::cout << " WARNING: density variation exceeds densityWarning";
+            }
+            std::cout << '\n';
+            tick=std::chrono::steady_clock::now();
+            writer.write(step,current);
+            io_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-tick).count();
+            previous=std::move(current); last=report;
+            boundary_exchange=wall_exchange=0;
+        }
     }
+    std::cout << "computeSeconds=" << compute_seconds << " outputSeconds=" << io_seconds
+              << " fluidMLUPS=" << (compute_seconds>0?fluid*static_cast<double>(c.steps)/compute_seconds/1e6:0) << '\n';
     std::cout << "Completed " << c.steps << " steps. OpenFOAM: " << (output / "lbm.foam") << '\n';
 }
 } // namespace
@@ -856,6 +1134,7 @@ void block_mesh_case(const std::filesystem::path &path) {
 
 void set_fields_case(const std::filesystem::path &path) {
     const auto mesh = mesh_read(path);
+    const bool physical=std::filesystem::exists(path/"constant"/"lbmProperties");
     auto d = dictionary(path / "system" / "setFieldsDict");
     known(d, {"defaultFieldValues", "regions"});
     std::map<std::string, Field> fields;
@@ -874,7 +1153,7 @@ void set_fields_case(const std::filesystem::path &path) {
             need((name == "U") == (comp == 3), "Wrong setFields field type");
             Vec value = comp == 3 ? c.vec() : Vec{c.scalar(), 0, 0};
             if (!fields.count(name)) {
-                fields.emplace(name, read_field(path / "0" / name, comp, mesh.centers.size()));
+                fields.emplace(name, read_field(path / "0" / name, comp, mesh.centers.size(),physical));
                 components[name] = comp;
             }
             for (auto i : selected)
@@ -937,7 +1216,10 @@ void set_fields_case(const std::filesystem::path &path) {
         out << "FoamFile\n{ version 2.0; format ascii; class "
             << (comp == 3 ? "volVectorField" : "volScalarField") << "; location \"0\"; object "
             << name << "; }\n";
-        out << "dimensions [0 0 0 0 0 0 0];\ninternalField nonuniform List<"
+        out << "dimensions [";
+        const auto& dims=required(field.dict,"dimensions");
+        for (std::size_t k=1; k+1<dims.size(); ++k) out << (k==1?"":" ") << dims[k];
+        out << "];\ninternalField nonuniform List<"
             << (comp == 3 ? "vector" : "scalar") << ">\n"
             << field.data.size() << "\n(\n";
         for (auto value : field.data) {
@@ -958,5 +1240,71 @@ void set_fields_case(const std::filesystem::path &path) {
         out.close();
     }
     std::cout << "Updated initial fields in " << (path / "0") << '\n';
+}
+void refine_foam_case(const std::filesystem::path& source,
+                      const std::filesystem::path& target, int factor) {
+    need(factor>=2 && factor<=8,"Refinement factor must be 2..8");
+    need(!std::filesystem::exists(target),"Refinement target already exists");
+    need(std::filesystem::exists(source/"constant"/"lbmProperties"),"Refinement requires an SI case");
+    auto mesh=dictionary(source/"system"/"blockMeshDict");
+    Cursor block(required(mesh,"blocks"));
+    block.expect("("); block.expect("hex"); block.group("(",")");
+    block.expect("(");
+    const auto count_begin=block.i;
+    int nx=block.label(), ny=block.label(), nz=block.label();
+    block.expect(")"); block.expect("simpleGrading"); const auto grading=block.vec(); block.expect(")");
+    need(block.i==block.t.size() && grading==Vec{1,1,1},"Refinement requires one uniform hex block");
+    const auto config=dictionary(source/"system"/"lbmDict");
+    need(word(config,"model","singlePhase")=="singlePhase","SI refinement currently requires singlePhase");
+    const bool two_d=word(config,"lattice","D2Q9")=="D2Q9";
+    need(nx>0 && ny>0 && nz>0 && (!two_d || nz==1),"Invalid refinement cell counts");
+    need(nx<=2000000/factor && ny<=2000000/factor && nz<=2000000/factor,"Refined extent too large");
+    const auto refined_cells=(static_cast<long long>(nx)*factor+2)*
+                             (static_cast<long long>(ny)*factor+2)*
+                             (two_d?1:static_cast<long long>(nz)*factor+2);
+    need(refined_cells<=2000000,"Refined bounding grid exceeds 2000000 cells including wall padding");
+    block.t[count_begin]=std::to_string(nx*factor);
+    block.t[count_begin+1]=std::to_string(ny*factor);
+    block.t[count_begin+2]=std::to_string(nz*(two_d?1:factor));
+    mesh["blocks"]=block.t;
+    auto control=dictionary(source/"system"/"controlDict");
+    const double dt=number(control,"deltaT",1)/(factor*factor);
+    const int interval=integer(number(control,"writeInterval",10)*factor*factor,"refined writeInterval",true);
+    std::ostringstream dt_text; dt_text << std::setprecision(17) << dt;
+    control["deltaT"]={dt_text.str()}; control["writeInterval"]={std::to_string(interval)};
+    // 初始均匀场可保持物理值不变；非均匀列表必须显式重采样，不能直接复制。
+    std::vector<std::filesystem::path> fields;
+    for (const auto& entry:std::filesystem::directory_iterator(source/"0")) {
+        need(entry.is_regular_file(),"Unexpected initial-field directory");
+        const auto name=entry.path().filename().string();
+        need(name=="U" || name=="rho" || name=="p" || name=="porosity" || name=="solid",
+             "Unsupported refinement field: "+name);
+        auto f=read_field(entry.path(),name=="U"?3:1,1,true);
+        need(required(f.dict,"internalField").front()=="uniform","Refinement needs uniform 0/ templates; regenerate setFields afterward");
+        fields.push_back(entry.path());
+    }
+    auto write_dictionary=[&](const char* name,const Dict& dict) {
+        auto file=target/"system"/name;
+        std::ofstream out(file); out.exceptions(std::ios::badbit|std::ios::failbit);
+        out << "FoamFile\n{version 2.0; format ascii; class dictionary; object " << name << ";}\n";
+        for (const auto& entry:dict) {
+            out << entry.first << ' ';
+            for (const auto& token:entry.second) out << token << ' ';
+            out << ";\n";
+        }
+    };
+    std::filesystem::create_directories(target/"0");
+    std::filesystem::create_directories(target/"system");
+    std::filesystem::create_directories(target/"constant");
+    for (const auto& file:fields) std::filesystem::copy_file(file,target/"0"/file.filename());
+    for (const auto* file:{"lbmDict","setFieldsDict"})
+        if (std::filesystem::exists(source/"system"/file))
+            std::filesystem::copy_file(source/"system"/file,target/"system"/file);
+    for (const auto* file:{"lbmProperties","lbmGeometry"})
+        if (std::filesystem::exists(source/"constant"/file))
+            std::filesystem::copy_file(source/"constant"/file,target/"constant"/file);
+    write_dictionary("blockMeshDict",mesh); write_dictionary("controlDict",control);
+    std::cout << "Refined SI template: " << target << "; dx/" << factor << ", deltaT/"
+              << factor*factor << "; physical fields/endTime preserved\n";
 }
 } // namespace lbm

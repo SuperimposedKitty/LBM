@@ -20,6 +20,7 @@ Solver::Solver(int nx, int ny, SolverConfig config)
       config_(config) {
     detail::validate_collision_parameters(
         config_.collision_model, config_.tau, config_.mrt);
+    detail::validate_flow_options(config_.flow, true);
 
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
@@ -27,10 +28,7 @@ Solver::Solver(int nx, int ny, SolverConfig config)
             grid_.rho[s] = config_.initial_rho;
             grid_.ux[s] = 0.0;
             grid_.uy[s] = 0.0;
-            for (int q = 0; q < D2Q9::q; ++q) {
-                grid_.f[grid_.dist_index(x, y, q)] =
-                    equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
-            }
+            set_equilibrium_cell(x, y, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
         }
     }
 }
@@ -50,6 +48,8 @@ void Solver::initialize_shear_wave(double amplitude, int mode) {
 
     masked_flow_initialized_ = false;
     geometry_cells_.clear();
+    wall_nodes_.clear();
+    origin_={}; spacing_={1,1,1}; units_={}; boundary_diagnostics_={};
 
     for (int y = 0; y < grid_.ny; ++y) {
         const double phase = 2.0 * pi * mode * static_cast<double>(y) /
@@ -59,10 +59,7 @@ void Solver::initialize_shear_wave(double amplitude, int mode) {
             grid_.rho[s] = config_.initial_rho;
             grid_.ux[s] = amplitude * std::sin(phase);
             grid_.uy[s] = 0.0;
-            for (int q = 0; q < D2Q9::q; ++q) {
-                grid_.f[grid_.dist_index(x, y, q)] =
-                    equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
-            }
+            set_equilibrium_cell(x, y, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
         }
     }
 }
@@ -70,6 +67,8 @@ void Solver::initialize_shear_wave(double amplitude, int mode) {
 void Solver::initialize_lid_driven_cavity(double lid_velocity) {
     masked_flow_initialized_ = false;
     geometry_cells_.clear();
+    wall_nodes_.clear();
+    origin_={}; spacing_={1,1,1}; units_={}; boundary_diagnostics_={};
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
             const bool is_wall = x == 0 || y == 0 || x == grid_.nx - 1 || y == grid_.ny - 1;
@@ -81,10 +80,7 @@ void Solver::initialize_lid_driven_cavity(double lid_velocity) {
             grid_.ux[s] = is_lid ? lid_velocity : 0.0;
             grid_.uy[s] = 0.0;
 
-            for (int q = 0; q < D2Q9::q; ++q) {
-                grid_.f[grid_.dist_index(x, y, q)] =
-                    equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
-            }
+            set_equilibrium_cell(x, y, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
         }
     }
 }
@@ -104,6 +100,8 @@ void Solver::initialize_masked_flow(const GeometryMask& mask, double inlet_veloc
     }
 
     geometry_cells_ = mask.cells();
+    origin_={}; spacing_={1,1,1}; units_={}; boundary_diagnostics_={};
+    wall_nodes_.assign(grid_.rho.size(), {});
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
             const int s = grid_.scalar_index(x, y);
@@ -126,13 +124,12 @@ void Solver::initialize_masked_flow(const GeometryMask& mask, double inlet_veloc
             const int s = grid_.scalar_index(x, y);
             const GeometryCell cell = geometry_cells_[s];
             grid_.solid[s] = cell == GeometryCell::Solid ? 1 : 0;
+            wall_nodes_[s].obstacle = grid_.solid[s] && x > 0 && x < grid_.nx-1 &&
+                                      y > 0 && y < grid_.ny-1;
             grid_.rho[s] = config_.initial_rho;
             grid_.ux[s] = cell == GeometryCell::Inlet ? inlet_velocity : 0.0;
             grid_.uy[s] = 0.0;
-            for (int q = 0; q < D2Q9::q; ++q) {
-                grid_.f[grid_.dist_index(x, y, q)] =
-                    equilibrium(q, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
-            }
+            set_equilibrium_cell(x, y, grid_.rho[s], grid_.ux[s], grid_.uy[s]);
         }
     }
 
@@ -193,9 +190,11 @@ void Solver::run_lid_driven_cavity(int steps, double lid_velocity) {
 
 Diagnostics Solver::diagnostics() const {
     Diagnostics d{};
+    d.boundary = boundary_diagnostics_;
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
             const int s = grid_.scalar_index(x, y);
+            if (grid_.solid[s]) continue;
             d.mass += grid_.rho[s];
             const double speed = std::sqrt(grid_.ux[s] * grid_.ux[s] + grid_.uy[s] * grid_.uy[s]);
             d.max_speed = std::max(d.max_speed, speed);
@@ -268,6 +267,15 @@ double Solver::equilibrium(int direction, double rho, double ux, double uy) {
     return detail::equilibrium(direction, rho, ux, uy);
 }
 
+void Solver::set_equilibrium_cell(int x, int y, double rho, double ux, double uy) {
+    const auto i = grid_.scalar_index(x, y);
+    grid_.rho[i] = rho; grid_.ux[i] = ux; grid_.uy[i] = uy;
+    const auto force = grid_.solid[i] ? std::array<double,3>{} : detail::total_force(config_.flow, rho);
+    const auto source = detail::guo_source(ux, uy, force[0], force[1]);
+    for (int q = 0; q < D2Q9::q; ++q)
+        grid_.f[grid_.dist_index(x,y,q)] = equilibrium(q,rho,ux,uy) - 0.5*source[q];
+}
+
 void Solver::collide() {
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
@@ -294,6 +302,8 @@ void Solver::collide_cell(int x, int y) {
     for (int q = 0; q < D2Q9::q; ++q) {
         population[q] = grid_.f[grid_.dist_index(x, y, q)];
     }
+    const auto force = detail::total_force(config_.flow, grid_.rho[s]);
+    const auto source = detail::guo_source(grid_.ux[s], grid_.uy[s], force[0], force[1]);
     detail::collide_population(
         population,
         grid_.rho[s],
@@ -301,7 +311,7 @@ void Solver::collide_cell(int x, int y) {
         grid_.uy[s],
         config_.tau,
         config_.collision_model,
-        config_.mrt);
+        config_.mrt, source);
     for (int q = 0; q < D2Q9::q; ++q) {
         grid_.f[grid_.dist_index(x, y, q)] = population[q];
     }
@@ -365,7 +375,7 @@ void Solver::stream_lid_driven_cavity(double lid_velocity) {
 
 void Solver::stream_masked_flow() {
     std::fill(grid_.f_next.begin(), grid_.f_next.end(), 0.0);
-
+    boundary_diagnostics_ = {};
     for (int y = 0; y < grid_.ny; ++y) {
         for (int x = 0; x < grid_.nx; ++x) {
             const int s = grid_.scalar_index(x, y);
@@ -374,13 +384,48 @@ void Solver::stream_masked_flow() {
             }
 
             for (int q = 0; q < D2Q9::q; ++q) {
-                const int dst_x = x + D2Q9::cx[q];
+                int dst_x = x + D2Q9::cx[q];
                 const int dst_y = y + D2Q9::cy[q];
+                if (config_.flow.periodic_x) dst_x = grid_.wrap_x(dst_x);
                 const bool outside =
                     dst_x < 0 || dst_x >= grid_.nx || dst_y < 0 || dst_y >= grid_.ny;
                 if (outside || grid_.solid[grid_.scalar_index(dst_x, dst_y)]) {
-                    grid_.f_next[grid_.dist_index(x, y, D2Q9::opposite[q])] +=
-                        grid_.f[grid_.dist_index(x, y, q)];
+                    const int opposite = D2Q9::opposite[q];
+                    const double outgoing = grid_.f[grid_.dist_index(x,y,q)];
+                    double fraction = 0.5, behind = outgoing, correction = 0;
+                    const WallNode* wall = !outside && !wall_nodes_.empty()
+                        ? &wall_nodes_[grid_.scalar_index(dst_x,dst_y)] : nullptr;
+                    if (wall) {
+                        correction = 6*D2Q9::w[q]*grid_.rho[s]*
+                            (D2Q9::cx[q]*wall->velocity[0] + D2Q9::cy[q]*wall->velocity[1]);
+                        const auto& here = wall_nodes_[s];
+                        if (config_.flow.interpolated_walls && here.distance_known &&
+                            wall->distance_known && here.distance > 0 && wall->distance <= 0)
+                            fraction = here.distance/(here.distance-wall->distance);
+                    }
+                    if (fraction < 0.5) {
+                        int bx = x-D2Q9::cx[q];
+                        const int by = y-D2Q9::cy[q];
+                        if (config_.flow.periodic_x) bx = grid_.wrap_x(bx);
+                        if (bx>=0 && bx<grid_.nx && by>=0 && by<grid_.ny &&
+                            !grid_.solid[grid_.scalar_index(bx,by)])
+                            behind = grid_.f[grid_.dist_index(bx,by,q)];
+                        else { fraction = 0.5; ++boundary_diagnostics_.interpolation_fallbacks; }
+                    }
+                    const double incoming = detail::reflected_population(outgoing,
+                        grid_.f[grid_.dist_index(x,y,opposite)], behind, fraction, correction);
+                    grid_.f_next[grid_.dist_index(x,y,opposite)] += incoming;
+                    const bool open_face = outside && !geometry_cells_.empty() &&
+                        ((dst_x<0 && geometry_cells_[s]==GeometryCell::Inlet) ||
+                         (dst_x>=grid_.nx && geometry_cells_[s]==GeometryCell::Outlet));
+                    if (!open_face) {
+                        boundary_diagnostics_.wall_mass_exchange += incoming-outgoing;
+                        for (int d = 0; d < 2; ++d) {
+                            const double force = (outgoing+incoming)*(d==0?D2Q9::cx[q]:D2Q9::cy[q]);
+                            boundary_diagnostics_.wall_force[d] += force;
+                            if (wall && wall->obstacle) boundary_diagnostics_.obstacle_force[d] += force;
+                        }
+                    }
                     continue;
                 }
                 grid_.f_next[grid_.dist_index(dst_x, dst_y, q)] +=
@@ -397,7 +442,19 @@ void Solver::apply_masked_boundaries(double inlet_velocity) {
         for (int x = 0; x < grid_.nx; ++x) {
             const int s = grid_.scalar_index(x, y);
             const GeometryCell cell = geometry_cells_[s];
-            if (cell == GeometryCell::Inlet) {
+            if (cell != GeometryCell::Inlet && cell != GeometryCell::Outlet) continue;
+            double before = 0;
+            for (int q=0; q<D2Q9::q; ++q) before += grid_.f[grid_.dist_index(x,y,q)];
+            if (config_.flow.open_boundary == OpenBoundaryModel::VelocityPressure) {
+                detail::D2Q9Population f{};
+                for (int q=0; q<D2Q9::q; ++q) f[q] = grid_.f[grid_.dist_index(x,y,q)];
+                const int source = grid_.scalar_index(cell==GeometryCell::Inlet?x+1:x-1,y);
+                const double scale = wall_nodes_.empty()?1:wall_nodes_[s].inlet_scale;
+                detail::reconstruct_x_boundary(f, detail::flow_lattice2d(), config_.flow,
+                    cell==GeometryCell::Inlet,
+                    {inlet_velocity*scale, cell==GeometryCell::Inlet?0:grid_.uy[source], 0});
+                for (int q=0; q<D2Q9::q; ++q) grid_.f[grid_.dist_index(x,y,q)] = f[q];
+            } else if (cell == GeometryCell::Inlet) {
                 const int source_x = x + 1;
                 double source_rho = 0.0;
                 double source_momentum_x = 0.0;
@@ -428,6 +485,9 @@ void Solver::apply_masked_boundaries(double inlet_velocity) {
                         grid_.f[grid_.dist_index(x - 1, y, q)];
                 }
             }
+            double after = 0;
+            for (int q=0; q<D2Q9::q; ++q) after += grid_.f[grid_.dist_index(x,y,q)];
+            boundary_diagnostics_.mass_exchange += after-before;
         }
     }
 }
@@ -453,8 +513,9 @@ void Solver::compute_macroscopic() {
             }
 
             grid_.rho[s] = rho;
-            grid_.ux[s] = momentum_x / rho;
-            grid_.uy[s] = momentum_y / rho;
+            const auto force = detail::total_force(config_.flow,rho);
+            grid_.ux[s] = (momentum_x+0.5*force[0]) / rho;
+            grid_.uy[s] = (momentum_y+0.5*force[1]) / rho;
         }
     }
 }
@@ -486,8 +547,9 @@ void Solver::compute_macroscopic_fluid_only(double lid_velocity) {
             }
 
             grid_.rho[s] = rho;
-            grid_.ux[s] = momentum_x / rho;
-            grid_.uy[s] = momentum_y / rho;
+            const auto force = detail::total_force(config_.flow,rho);
+            grid_.ux[s] = (momentum_x+0.5*force[0]) / rho;
+            grid_.uy[s] = (momentum_y+0.5*force[1]) / rho;
         }
     }
 }
@@ -516,8 +578,9 @@ void Solver::compute_macroscopic_masked() {
                 throw std::runtime_error("Non-physical density encountered in masked flow.");
             }
             grid_.rho[s] = rho;
-            grid_.ux[s] = momentum_x / rho;
-            grid_.uy[s] = momentum_y / rho;
+            const auto force = detail::total_force(config_.flow,rho);
+            grid_.ux[s] = (momentum_x+0.5*force[0]) / rho;
+            grid_.uy[s] = (momentum_y+0.5*force[1]) / rho;
         }
     }
 }
@@ -529,12 +592,18 @@ FoamSnapshot Solver::openfoam_snapshot() const {
     snapshot.nz = 1;
     snapshot.two_dimensional = true;
     snapshot.two_phase = false;
+    snapshot.origin=origin_; snapshot.spacing=spacing_; snapshot.units=units_;
     snapshot.cells.resize(grid_.rho.size());
     for (std::size_t i = 0; i < snapshot.cells.size(); ++i) {
         auto& cell = snapshot.cells[i];
         cell.solid = grid_.solid[i] != 0;
         cell.rho = grid_.rho[i];
         cell.velocity = {grid_.ux[i], grid_.uy[i], 0.0};
+        if (wall_nodes_.size()==snapshot.cells.size()) {
+            cell.wall_distance=wall_nodes_[i].distance; cell.wall_distance_known=wall_nodes_[i].distance_known;
+            cell.obstacle=wall_nodes_[i].obstacle; cell.inlet_scale=wall_nodes_[i].inlet_scale;
+            if (cell.solid) cell.velocity=wall_nodes_[i].velocity;
+        }
         if (geometry_cells_.size() == snapshot.cells.size()) {
             cell.boundary = geometry_cells_[i] == GeometryCell::Inlet ? 1 :
                             (geometry_cells_[i] == GeometryCell::Outlet ? 2 : 0);
@@ -550,6 +619,8 @@ void Solver::initialize_fields(const FoamSnapshot& input) {
         input.cells.size() != grid_.rho.size())
         throw std::invalid_argument("Imported fields do not match solver dimensions/model.");
     geometry_cells_.resize(input.cells.size());
+    origin_=input.origin; spacing_=input.spacing; units_=input.units; boundary_diagnostics_={};
+    wall_nodes_.resize(input.cells.size());
     masked_flow_initialized_ = true;
     for (int z = 0; z < 1; ++z) {
         for (int y = 0; y < grid_.ny; ++y) {
@@ -557,14 +628,12 @@ void Solver::initialize_fields(const FoamSnapshot& input) {
                 const auto i = grid_.scalar_index(x, y);
                 const auto& cell = input.cells[i];
                 grid_.solid[i] = cell.solid ? 1 : 0;
+                wall_nodes_[i] = {cell.wall_distance, cell.wall_distance_known, cell.obstacle,
+                                  cell.solid?cell.velocity:std::array<double,3>{}, cell.inlet_scale};
                 geometry_cells_[i] = cell.solid ? GeometryCell::Solid :
                     (cell.boundary == 1 ? GeometryCell::Inlet :
                      (cell.boundary == 2 ? GeometryCell::Outlet : GeometryCell::Fluid));
-                grid_.rho[i] = cell.rho;
-                grid_.ux[i] = cell.velocity[0];
-                grid_.uy[i] = cell.velocity[1];
-                for (int q = 0; q < D2Q9::q; ++q)
-                    grid_.f[grid_.dist_index(x,y,q)] = equilibrium(q, cell.rho, cell.velocity[0], cell.velocity[1]);
+                set_equilibrium_cell(x,y,cell.rho,cell.velocity[0],cell.velocity[1]);
             }
         }
     }

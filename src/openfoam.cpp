@@ -10,6 +10,8 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <regex>
+#include <sstream>
 
 namespace lbm {
 namespace {
@@ -41,11 +43,17 @@ std::size_t cell_count(const FoamSnapshot& s) {
     return count;
 }
 
+bool time_name(const std::string& name) {
+    static const std::regex pattern(R"(^[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$)");
+    if (name.size()>64 || !std::regex_match(name,pattern)) return false;
+    try {return std::isfinite(std::stod(name));} catch (...) {return false;}
+}
+
 // 只清理本导出器清单中的时间步，逐文件删除；保留用户文件和旧版运行编号目录。
 void prepare_output(const std::filesystem::path& directory) {
     const auto manifest = directory / ".lbm-times";
     const std::set<std::string> fields{
-        "U", "speed", "vorticity", "rho", "p", "porosity", "rhoA", "rhoB",
+        "U", "speed", "vorticity", "divergence", "rho", "p", "porosity", "rhoA", "rhoB",
         "alpha.A", "alpha.B", "phase", "pBulk"};
     auto check_path = [&](const std::filesystem::path& path) {
         auto current = directory;
@@ -64,7 +72,7 @@ void prepare_output(const std::filesystem::path& directory) {
         std::getline(in, version);
         if (version != "LBM_OPENFOAM_TIMES_V1") throw std::runtime_error("Invalid LBM output manifest.");
         while (std::getline(in, time)) {
-            if (time.empty() || time.find_first_not_of("0123456789") != std::string::npos)
+            if (!time_name(time))
                 throw std::runtime_error("Invalid time in LBM output manifest.");
             times.insert(time);
         }
@@ -83,7 +91,7 @@ void prepare_output(const std::filesystem::path& directory) {
     if (std::filesystem::exists(directory)) {
         for (const auto& entry : std::filesystem::directory_iterator(directory)) {
             const auto name = entry.path().filename().string();
-            if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos && times.count(name) == 0)
+            if (time_name(name) && times.count(name) == 0)
                 throw std::runtime_error("Unmanaged time directory: " + entry.path().string());
         }
     }
@@ -119,8 +127,27 @@ std::filesystem::path openfoam_result_path(const char* case_name) {
     return std::filesystem::path(LBM_RESULT_DIR) / "openfoam" / name;
 }
 
+double detail::velocity_derivative(const FoamSnapshot& s, std::size_t id, int axis, int component) {
+    const int coordinate[3]={static_cast<int>(id%s.nx),static_cast<int>((id/s.nx)%s.ny),
+                              static_cast<int>(id/s.nx/s.ny)};
+    const int extent[3]={s.nx,s.ny,s.nz};
+    auto neighbor=[&](int direction)->const FoamCell* {
+        const int position=coordinate[axis]+direction;
+        if (position<0 || position>=extent[axis]) return nullptr;
+        int xyz[3]={coordinate[0],coordinate[1],coordinate[2]}; xyz[axis]=position;
+        const auto index=(static_cast<std::size_t>(xyz[2])*s.ny+xyz[1])*s.nx+xyz[0];
+        return s.cells[index].solid?nullptr:&s.cells[index];
+    };
+    const auto* before=neighbor(-1); const auto* after=neighbor(1);
+    if (before && after) return (after->velocity[component]-before->velocity[component])/(2*s.spacing[axis]);
+    if (after) return (after->velocity[component]-s.cells[id].velocity[component])/s.spacing[axis];
+    if (before) return (s.cells[id].velocity[component]-before->velocity[component])/s.spacing[axis];
+    return 0;
+}
+
 void validate_initial_snapshot(const FoamSnapshot& s) {
     cell_count(s);
+    s.units.validate();
     bool any=false;
     for(std::size_t i=0;i<s.cells.size();++i) {
         const auto& c=s.cells[i];
@@ -128,6 +155,9 @@ void validate_initial_snapshot(const FoamSnapshot& s) {
             if(!std::isfinite(v))throw std::invalid_argument("Non-finite initial field");
         if(c.rho<=0 || c.rho_a<0 || c.rho_b<0 || c.boundary<0 || c.boundary>2)
             throw std::invalid_argument("Invalid initial density/boundary");
+        if ((c.wall_distance_known && !std::isfinite(c.wall_distance)) ||
+            !std::isfinite(c.inlet_scale) || c.inlet_scale<0)
+            throw std::invalid_argument("Invalid wall distance/inlet profile");
         if(c.solid)continue;
         any=true;
         if(c.porosity<=0 || c.porosity>1 || (s.two_dimensional&&c.velocity[2]!=0))
@@ -148,9 +178,11 @@ void OpenFoamWriter::validate(const FoamSnapshot& s) const {
     if (s.nx != topology_.nx || s.ny != topology_.ny || s.nz != topology_.nz ||
         s.two_dimensional != topology_.two_dimensional || s.two_phase != topology_.two_phase ||
         s.interaction_strength != topology_.interaction_strength ||
-        s.origin != topology_.origin || s.spacing != topology_.spacing)
+        s.origin != topology_.origin || s.spacing != topology_.spacing || s.units != topology_.units)
         throw std::invalid_argument("OpenFOAM snapshot topology/model changed.");
     if (!std::isfinite(s.interaction_strength)) throw std::invalid_argument("Invalid interaction strength.");
+    s.units.validate();
+    if (s.units.si && s.two_phase) throw std::invalid_argument("SI export currently requires single phase.");
     for (int d = 0; d < 3; ++d)
         if (!std::isfinite(s.origin[d]) || !std::isfinite(s.spacing[d]) || s.spacing[d] <= 0)
             throw std::invalid_argument("Invalid mesh coordinates.");
@@ -262,7 +294,8 @@ OpenFoamWriter::OpenFoamWriter(const std::filesystem::path& directory, const Foa
     auto control = file(directory_ / "system" / "controlDict");
     header(control, "dictionary", "system", "controlDict");
     control << "application lbmPostProcess;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\n"
-               "endTime 0;\ndeltaT 1;\nwriteControl timeStep;\nwriteInterval 1;\n"
+               "endTime 0;\ndeltaT " << (s.units.si?s.units.time_step:1) <<
+               ";\nwriteControl timeStep;\nwriteInterval 1;\n"
                "writeFormat ascii;\nwritePrecision 17;\nrunTimeModifiable false;\n";
     control.close();
     auto marker = file(directory_ / "lbm.foam"); marker.close();
@@ -271,7 +304,11 @@ OpenFoamWriter::OpenFoamWriter(const std::filesystem::path& directory, const Foa
 void OpenFoamWriter::write(int step, const FoamSnapshot& s) const {
     if (step < 0) throw std::invalid_argument("OpenFOAM time step must be nonnegative.");
     validate(s);
-    const auto time = std::to_string(step);
+    std::ostringstream time_text;
+    time_text.imbue(std::locale::classic());
+    time_text << std::setprecision(12) << (s.units.si?step*s.units.time_step:static_cast<double>(step));
+    const auto time=time_text.str();
+    if (!time_name(time)) throw std::invalid_argument("Invalid output time.");
     const auto path = directory_ / time;
     // 写场之前登记时间步，中途中断产生的部分文件也能在下次运行清理。
     std::ofstream manifest;
@@ -280,11 +317,12 @@ void OpenFoamWriter::write(int step, const FoamSnapshot& s) const {
     manifest << time << '\n';
     manifest.close();
     std::filesystem::create_directories(path);
-    auto field = [&](const char* name, bool vector, auto value) {
+    auto field = [&](const char* name, bool vector, auto value,
+                     const char* dimensions="[0 0 0 0 0 0 0]") {
         auto out = file(path / name);
         header(out, vector ? "volVectorField" : "volScalarField", time, name);
-        // 未配置 SI 映射，所有输出量明确标为无量纲格子单位。
-        out << "dimensions [0 0 0 0 0 0 0];\ninternalField nonuniform List<"
+        // 量纲与数值转换同步；旧案例仍保持无量纲输出。
+        out << "dimensions " << dimensions << ";\ninternalField nonuniform List<"
             << (vector ? "vector" : "scalar") << ">\n" << fluid_.size() << "\n(\n";
         for (auto i : fluid_) { value(out, s.cells[i], i); out << '\n'; }
         out << ");\nboundaryField\n{\n";
@@ -302,45 +340,31 @@ void OpenFoamWriter::write(int step, const FoamSnapshot& s) const {
         out << "}\n"; out.close();
     };
     auto derivative = [&](std::size_t id, int axis, int component) {
-        const int coordinate[3] = {static_cast<int>(id % s.nx),
-                                   static_cast<int>((id / s.nx) % s.ny),
-                                   static_cast<int>(id / s.nx / s.ny)};
-        const int extent[3] = {s.nx, s.ny, s.nz};
-        auto neighbor = [&](int direction) -> const FoamCell* {
-            const int position = coordinate[axis] + direction;
-            if (position < 0 || position >= extent[axis]) return nullptr;
-            int xyz[3] = {coordinate[0], coordinate[1], coordinate[2]};
-            xyz[axis] = position;
-            const auto index = (static_cast<std::size_t>(xyz[2]) * s.ny + xyz[1]) * s.nx + xyz[0];
-            return s.cells[index].solid ? nullptr : &s.cells[index];
-        };
-        const auto* before = neighbor(-1);
-        const auto* after = neighbor(1);
-        if (before && after)
-            return (after->velocity[component] - before->velocity[component]) /
-                   (2 * s.spacing[axis]);
-        if (after)
-            return (after->velocity[component] - s.cells[id].velocity[component]) /
-                   s.spacing[axis];
-        if (before)
-            return (s.cells[id].velocity[component] - before->velocity[component]) /
-                   s.spacing[axis];
-        return 0.0;
+        return detail::velocity_derivative(s,id,axis,component);
     };
-    field("U", true, [](auto& out, const FoamCell& c, std::size_t) {
-        out << '(' << c.velocity[0] << ' ' << c.velocity[1] << ' ' << c.velocity[2] << ')';
-    });
-    field("speed", false, [](auto& out, const FoamCell& c, std::size_t) {
-        out << std::sqrt(c.velocity[0] * c.velocity[0] + c.velocity[1] * c.velocity[1] +
-                         c.velocity[2] * c.velocity[2]);
-    });
+    const double velocity_scale=s.units.velocity_scale();
+    const char* velocity_dimensions=s.units.si?"[0 1 -1 0 0 0 0]":"[0 0 0 0 0 0 0]";
+    field("U", true, [&](auto& out, const FoamCell& c, std::size_t) {
+        out << '(' << velocity_scale*c.velocity[0] << ' ' << velocity_scale*c.velocity[1]
+            << ' ' << velocity_scale*c.velocity[2] << ')';
+    },velocity_dimensions);
+    field("speed", false, [&](auto& out, const FoamCell& c, std::size_t) {
+        out << velocity_scale*std::sqrt(c.velocity[0] * c.velocity[0] + c.velocity[1] * c.velocity[1] +
+                                        c.velocity[2] * c.velocity[2]);
+    },velocity_dimensions);
     field("vorticity", true, [&](auto& out, const FoamCell&, std::size_t i) {
-        out << '(' << derivative(i, 1, 2) - derivative(i, 2, 1) << ' '
-            << derivative(i, 2, 0) - derivative(i, 0, 2) << ' '
-            << derivative(i, 0, 1) - derivative(i, 1, 0) << ')';
-    });
-    field("rho", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho; });
-    field("p", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho/3.0; });
+        out << '(' << velocity_scale*(derivative(i, 1, 2) - derivative(i, 2, 1)) << ' '
+            << velocity_scale*(derivative(i, 2, 0) - derivative(i, 0, 2)) << ' '
+            << velocity_scale*(derivative(i, 0, 1) - derivative(i, 1, 0)) << ')';
+    },s.units.si?"[0 0 -1 0 0 0 0]":"[0 0 0 0 0 0 0]");
+    field("divergence", false, [&](auto& out,const FoamCell&,std::size_t i) {
+        out << velocity_scale*(derivative(i,0,0)+derivative(i,1,1)+derivative(i,2,2));
+    },s.units.si?"[0 0 -1 0 0 0 0]":"[0 0 0 0 0 0 0]");
+    field("rho", false, [&](auto& out, const FoamCell& c, std::size_t) {
+        out << c.rho*(s.units.si?s.units.density_scale:1);
+    },s.units.si?"[1 -3 0 0 0 0 0]":"[0 0 0 0 0 0 0]");
+    field("p", false, [&](auto& out, const FoamCell& c, std::size_t) { out << s.units.pressure(c.rho); },
+          s.units.si?"[1 -1 -2 0 0 0 0]":"[0 0 0 0 0 0 0]");
     field("porosity", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.porosity; });
     if (s.two_phase) {
         field("rhoA", false, [](auto& out, const FoamCell& c, std::size_t) { out << c.rho_a; });

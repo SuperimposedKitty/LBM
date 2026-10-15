@@ -11,7 +11,7 @@ internalField uniform 1;
 boundaryField
 {
  walls { type zeroGradient; }
- inlet { type fixedValue; value uniform 1; }
- outlet { type zeroGradient; }
+ inlet { type zeroGradient; }
+ outlet { type fixedValue; value uniform 1; }
  frontAndBack { type empty; }
 }

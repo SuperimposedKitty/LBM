@@ -38,6 +38,16 @@ template <class F> void rejects(F run) {
     }
     check(failed, "Invalid case was accepted");
 }
+void copy_inputs(const std::filesystem::path& source,const std::filesystem::path& target) {
+    std::filesystem::create_directories(target);
+    for (const auto* dir:{"0","system"})
+        std::filesystem::copy(source/dir,target/dir,std::filesystem::copy_options::recursive);
+    for (const auto* name:{"lbmGeometry","lbmProperties"})
+        if (std::filesystem::exists(source/"constant"/name)) {
+            std::filesystem::create_directories(target/"constant");
+            std::filesystem::copy_file(source/"constant"/name,target/"constant"/name);
+        }
+}
 template <class S> void verify_initial(S &solver, const lbm::FoamCase &c) {
     solver.initialize_fields(c.initial);
     const auto s = solver.openfoam_snapshot();
@@ -123,9 +133,7 @@ int main() {
             auto path = root / (std::string("input_test_") + name);
             std::filesystem::create_directories(path);
             // 只复制版本控制中的输入，忽略用户可能生成的网格。
-            for (const auto *dir : {"0", "system"})
-                std::filesystem::copy(source / dir, path / dir,
-                                      std::filesystem::copy_options::recursive);
+            copy_inputs(source,path);
             const auto original_u = read(path / "0" / "U");
             if (std::string(name) == "closed3d") {
                 auto mesh_dict = read(path / "system" / "blockMeshDict");
@@ -204,9 +212,7 @@ int main() {
             if (std::string(name) == "channel2d") {
                 auto obstacle_path = root / "input_test_obstacle";
                 std::filesystem::create_directories(obstacle_path);
-                for (const auto *dir : {"0", "system"})
-                    std::filesystem::copy(source / dir, obstacle_path / dir,
-                                          std::filesystem::copy_options::recursive);
+                copy_inputs(source,obstacle_path);
                 auto solid = s;
                 const auto blocked = static_cast<std::size_t>(s.nx * 5 + 10);
                 solid.cells[blocked].solid = true;
@@ -293,9 +299,7 @@ int main() {
             auto source = std::filesystem::path(LBM_CASES_DIR) / "closed3d";
             auto path = root / "input_test_closed3d_flow";
             std::filesystem::create_directories(path);
-            for (const auto *dir : {"0", "system"})
-                std::filesystem::copy(source / dir, path / dir,
-                                      std::filesystem::copy_options::recursive);
+            copy_inputs(source,path);
             lbm::block_mesh_case(path);
             lbm::set_fields_case(path);
             auto c = lbm::read_foam_case(path);

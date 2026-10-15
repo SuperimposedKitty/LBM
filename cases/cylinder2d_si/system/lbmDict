@@ -1,0 +1,17 @@
+FoamFile
+{
+ version 2.0;
+ format ascii;
+ class dictionary;
+ object lbmDict;
+}
+model singlePhase;
+lattice D2Q9;
+collision MRT;
+openBoundary velocityPressure;
+wallBoundary interpolated;
+bodyForce (0 0 0);
+acceleration (0 0 0);
+maxMach 0.1;
+densityWarning 0.01;
+inletRampTime 0.15;
