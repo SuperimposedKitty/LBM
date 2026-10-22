@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lbm/openfoam.hpp"
+#include "lbm/convergence.hpp"
 #include "lbm/solver.hpp"
 #include "lbm/solver3d.hpp"
 #include "lbm/two_phase_solver.hpp"
@@ -24,12 +25,21 @@ struct FoamCase {
     double density_warning = 0.01;
     bool parabolic_inlet = false;
     double inlet_ramp_steps = 0.0;
+    ConvergenceConfig convergence{};
+};
+
+struct FoamRunSummary {
+    int steps = 0;
+    bool converged = false;
+    double velocity_change = 0, density_change = 0, force_range = 0;
+    double drag = 0, lift = 0, maximum_mach = 0;
 };
 
 FoamCase read_foam_case(const std::filesystem::path &path);
 void block_mesh_case(const std::filesystem::path &path);
 void set_fields_case(const std::filesystem::path &path);
 void solve_foam_case(const std::filesystem::path &path);
+FoamRunSummary run_foam_case(const FoamCase& simulation, const char* output_case);
 void refine_foam_case(const std::filesystem::path& source,
                       const std::filesystem::path& target, int factor);
 

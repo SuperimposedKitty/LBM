@@ -118,7 +118,7 @@ densityWarning 0.01;
 `velocityPressure` 仅重构未知分布：入口 U 固定、rho/p 零梯度；出口 U 零梯度、rho/p 固定。
 `legacy` 保留旧入口/出口算法。`inletProfile parabolic` 仅限二维 velocityPressure 模式，指定入口速度表示平均速度；入口平滑启动也仅用于单相。
 单相 `bodyForce` 为单位体积力，`acceleration` 为加速度，两者相加；SI 模式分别用 N/m³、m/s²，否则为格子单位。
-默认没有体力。`maxMach` 在初始及输出采样步检查，超限终止；密度波动超阈值仅告警，不会伪装成收敛。
+默认没有体力。通用单相 `maxMach` 在初始及每个内部步检查，超限终止；密度波动在监测步超阈值仅告警，不会伪装成收敛。
 
 `wallBoundary interpolated` 要求 `constant/lbmGeometry`，例如：
 
@@ -145,6 +145,47 @@ solids
 细化倍率为 2..8，活动方向格点数乘倍率，`deltaT` 除倍率平方，步数及输出间隔乘倍率平方，因此保持 `tau`、Re 和物理采样时间。
 目标目录必须不存在；不自动覆盖输入，不重采样非均匀初场，不支持任意 polyMesh 或多块网格的细化。
 二维加密两倍计算量约增至 16 倍，三维约 32 倍（未计 I/O）。解析解、参考数据和已验证误差见 [ACCURACY.md](ACCURACY.md)。
+
+### 稳态检查与圆柱网格对照
+
+默认仍计算到 `endTime`。单相可在 `system/lbmDict` 中显式启用联合稳态判据：
+下面的 minTime=2 s 示例需要先将 SI 案例 endTime 延长至例如 12 s；原模板的 0.75 s 不能覆盖这一检查时间。
+
+```text
+convergence
+{
+    enabled true;
+    interval 1600;
+    minTime 2;
+    consecutiveWindows 5;
+    velocityTolerance 1e-4;
+    densityTolerance 1e-6;
+    forceTolerance 1e-3;
+}
+```
+
+`interval` 是监测步数，与 `writeInterval` 独立；0 表示沿用输出间隔。`minTime` 使用案例时间单位（SI 为秒），
+且检查窗口必须整体越过该时间和入口启动段。速度、密度相邻监测帧的相对 L2 变化，以及窗口内 Cd_ref/Cl_ref 的最大跨度必须同时达标，
+连续满足指定次数后才提前结束；不足一个完整间隔的尾段不算通过窗口。无障碍或无非零参考速度时不检查力系数。
+收敛时即使不在写盘步也保存最后一帧；未收敛会明确输出 `termination=endTime`，不把最后帧称为稳态。
+这不是非定常流的停止准则，两相暂不支持。改变 interval 会改变判据的时间尺度，因此物理对照时要保持监测时长一致。
+`lbm_refineCase` 会同步缩放显式 convergence.interval，保留 minTime 的物理值。
+通用单相求解器现在每个内部步都检查 maxMach，不能再靠减小输出频率漏过速度超限。
+
+新增一个与 `cylinder2d_si` 使用相同物理流体、直径及入口的验证程序：
+
+```powershell
+.\bin\lbm_cylinder_validation.exe
+.\bin\lbm_cylinder_validation.exe --study
+.\bin\lbm_cylinder_validation.exe --diameter 16 --length 6 --end-time 12
+```
+
+默认运行直径 16 格的单个案例；`--study` 顺序计算直径 8/12/16 格及 12 格、加长至 9D 的出口对照。
+三档均为 Re=18、tau=0.52、相同速度入口/压力出口和 BFL，按扩散尺度减小 dt；它们不是 DFG 2D-1 的完整复现。
+length 表示通道总长与直径之比；同一网格、长度重跑覆盖同名结果。
+结果只写 `result/openfoam/cylinder_validation_d<直径格数>_l<长度比>/lbm.foam`，含初始场。
+控制台 STUDY 行给出网格差与出口长度敏感性；任一工况未收敛则研究返回错误，不报告有效收敛阶。
+此验证程序直接构造宏观初场调用通用运行器，原有 blockMesh/setFields/solver 文件流程继续保留。
 
 ### 输入范围与边界
 

@@ -49,10 +49,18 @@ int main() {
         const auto source=std::filesystem::path(LBM_CASES_DIR)/"cylinder2d_si";
         const auto coarse=root/"coarse", fine=root/"fine";
         copy_inputs(source,coarse);
+        write(coarse/"system"/"lbmDict",read(coarse/"system"/"lbmDict")+
+              "\nconvergence { enabled false; interval 80; minTime 0.1; consecutiveWindows 3; }\n");
         lbm::refine_foam_case(coarse,fine,2);
         lbm::block_mesh_case(coarse); lbm::block_mesh_case(fine);
         auto a=lbm::read_foam_case(coarse), b=lbm::read_foam_case(fine);
+        check(!a.convergence.enabled && b.convergence.interval==4*a.convergence.interval &&
+              b.convergence.minimum_steps==4*a.convergence.minimum_steps,
+              "Refinement changed physical monitoring interval/minTime");
         const auto coarse_dict=read(coarse/"system"/"lbmDict");
+        write(coarse/"system"/"lbmDict",replace(coarse_dict,"enabled false;",
+              "enabled true; velocityTolerance 0;"));
+        rejects([&]{lbm::read_foam_case(coarse);});
         write(coarse/"system"/"lbmDict",replace(coarse_dict,"openBoundary velocityPressure;",
               "openBoundary legacy;")+"\ninletProfile parabolic;\n");
         rejects([&]{lbm::read_foam_case(coarse);});

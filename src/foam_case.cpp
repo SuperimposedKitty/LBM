@@ -497,7 +497,7 @@ void configure(FoamCase &c, const std::filesystem::path &path) {
     known(d, {"model", "lattice", "collision", "tau", "tauA", "tauB", "interactionStrength",
               "contactAngle", "wallAdhesion", "recoloring", "bodyForce", "poreDiameter",
               "darcyDrag", "forchheimerDrag", "acceleration", "openBoundary", "wallBoundary",
-              "inletProfile", "maxMach", "densityWarning", "referenceLength", "inletRampTime"});
+              "inletProfile", "maxMach", "densityWarning", "referenceLength", "inletRampTime", "convergence"});
     const auto model = word(d, "model", "singlePhase"), lattice = word(d, "lattice", "D2Q9"),
                collision = word(d, "collision", "MRT");
     need(model == "singlePhase" || model == "twoPhase", "Unknown LBM model");
@@ -586,6 +586,25 @@ void configure(FoamCase &c, const std::filesystem::path &path) {
     need(near(requested_steps,std::round(requested_steps)),"endTime must be a multiple of deltaT");
     c.steps = integer(std::round(requested_steps), "endTime/deltaT");
     c.write_interval = integer(number(control, "writeInterval", 10), "writeInterval", true);
+    if (d.count("convergence")) {
+        auto settings=Cursor(d.at("convergence")).dict();
+        known(settings,{"enabled","interval","minTime","consecutiveWindows","velocityTolerance",
+                        "densityTolerance","forceTolerance"});
+        const auto enabled=word(settings,"enabled","false");
+        need(enabled=="true" || enabled=="false","convergence.enabled must be true or false");
+        auto& s=c.convergence;
+        s.enabled=enabled=="true";
+        s.interval=integer(number(settings,"interval",0),"convergence.interval");
+        const double minimum=number(settings,"minTime",0)/units.time_step;
+        need(minimum>=0 && minimum<=c.steps,"convergence.minTime must be within the simulation");
+        s.minimum_steps=integer(std::ceil(minimum),"convergence.minTime/deltaT");
+        s.consecutive_windows=integer(number(settings,"consecutiveWindows",5),"convergence.consecutiveWindows",true);
+        s.velocity_tolerance=number(settings,"velocityTolerance",s.velocity_tolerance);
+        s.density_tolerance=number(settings,"densityTolerance",s.density_tolerance);
+        s.force_tolerance=number(settings,"forceTolerance",s.force_tolerance);
+        s.validate();
+        need(!s.enabled || !c.initial.two_phase,"Steady-state termination currently requires singlePhase");
+    }
 }
 } // namespace
 
@@ -852,11 +871,12 @@ namespace {
 struct FieldReport {
     double mass=0, rho_min=1e100, rho_max=0, speed=0, energy=0, change=0, inlet=0, outlet=0;
     double divergence_rms=0;
+    double density_change=0;
 };
 
 FieldReport field_report(const FoamSnapshot& s, const FoamSnapshot* previous=nullptr) {
     FieldReport r;
-    double delta=0, norm=0, divergence2=0;
+    double delta=0, norm=0, divergence2=0, density_delta=0, density_norm=0;
     std::size_t fluid=0;
     for (std::size_t i=0; i<s.cells.size(); ++i) {
         const auto& cell=s.cells[i];
@@ -866,6 +886,11 @@ FieldReport field_report(const FoamSnapshot& s, const FoamSnapshot* previous=nul
         for (int d=0; d<3; ++d) divergence+=detail::velocity_derivative(s,i,d,d);
         divergence2+=divergence*divergence;
         r.mass+=cell.rho;
+        density_norm+=cell.rho*cell.rho;
+        if (previous) {
+            const double diff=cell.rho-previous->cells[i].rho;
+            density_delta+=diff*diff;
+        }
         r.rho_min=std::min(r.rho_min,cell.rho); r.rho_max=std::max(r.rho_max,cell.rho);
         double speed2=0;
         for (int d=0; d<3; ++d) {
@@ -881,12 +906,19 @@ FieldReport field_report(const FoamSnapshot& s, const FoamSnapshot* previous=nul
         if (cell.boundary==2) r.outlet+=cell.rho*cell.velocity[0];
     }
     r.change=previous?std::sqrt(delta/std::max(norm,1e-30)):0;
+    r.density_change=previous?std::sqrt(density_delta/std::max(density_norm,1e-30)):0;
     r.divergence_rms=s.units.velocity_scale()*std::sqrt(divergence2/std::max<std::size_t>(fluid,1));
     return r;
 }
 
 template <class SolverType>
-void run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path &output) {
+FoamRunSummary run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path &output) {
+    c.convergence.validate();
+    need(c.steps>=0 && c.write_interval>0,"Invalid run steps/output interval");
+    need(std::isfinite(c.inlet_ramp_steps) && c.inlet_ramp_steps>=0 &&
+         std::isfinite(c.max_mach) && c.max_mach>0 && c.max_mach<0.5 &&
+         std::isfinite(c.reference_length) && c.reference_length>=0 &&
+         std::isfinite(c.inlet_velocity) && c.inlet_velocity>=0,"Invalid run controls");
     solver.initialize_fields(c.initial);
     auto snapshot = [&]() {
         auto s = solver.openfoam_snapshot();
@@ -896,10 +928,11 @@ void run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path
         return s;
     };
     constexpr bool single=std::is_same_v<SolverType,Solver> || std::is_same_v<SolverType,Solver3D>;
+    need(single || !c.convergence.enabled,"Steady-state termination currently requires singlePhase");
     auto previous=snapshot();
     auto last=field_report(previous);
     const double reference_speed=c.inlet_velocity>0?c.inlet_velocity:last.speed;
-    const double reference_rho=single?c.single.initial_rho:1;
+    const double reference_rho=single?(previous.two_dimensional?c.single.initial_rho:c.single3d.initial_rho):1;
     const double area=previous.two_dimensional?c.reference_length:c.reference_length*c.reference_length;
     const std::size_t fluid=std::count_if(previous.cells.begin(),previous.cells.end(),
                                         [](const FoamCell& cell){return !cell.solid;});
@@ -910,7 +943,20 @@ void run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path
         std::cout << " tau=" << tau << " reference Re=" <<
             reference_speed*c.reference_length/((tau-0.5)/3);
     }
-    std::cout << "\nDiagnostics: lattice mass/rho/Mach; dU is relative to previous output interval\n";
+    const int monitor_interval=c.convergence.interval>0?c.convergence.interval:c.write_interval;
+    const bool check_force=reference_speed>0 && area>0 && std::any_of(previous.cells.begin(),previous.cells.end(),
+        [](const FoamCell& cell){return cell.solid && cell.obstacle;});
+    const double force_scale=check_force?0.5*reference_rho*reference_speed*reference_speed*area:1;
+    auto settings=c.convergence;
+    settings.minimum_steps=std::max(settings.minimum_steps,
+        static_cast<int>(std::min(static_cast<double>(c.steps),std::ceil(c.inlet_ramp_steps))));
+    ConvergenceMonitor convergence(settings);
+    FoamRunSummary summary;
+    summary.maximum_mach=last.speed*std::sqrt(3.0);
+    int previous_step=0;
+    double drag_min=0, drag_max=0, lift_min=0, lift_max=0;
+    std::cout << "\nDiagnostics: lattice mass/rho/Mach; dU/dRho use monitorInterval=" << monitor_interval
+              << "; forceRange is the full-window Cd/Cl range\n";
     if constexpr (single)
         need(last.speed*std::sqrt(3.0)<=c.max_mach,"Initial Mach exceeds maxMach");
     auto io_start=std::chrono::steady_clock::now();
@@ -925,20 +971,43 @@ void run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path
                 0.5*(1-std::cos(3.14159265358979323846*std::min(1.0,step/c.inlet_ramp_steps))):1));
         else
             solver.step();
-        compute_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-tick).count();
         if constexpr (single) {
+            // 每步扫描宏观场，避免写盘间隔之间的超限被漏检；不复制全场。
+            const auto& grid=solver.grid();
+            double speed2=0;
+            for (std::size_t i=0; i<grid.rho.size(); ++i) if (!grid.solid[i]) {
+                double value=grid.ux[i]*grid.ux[i]+grid.uy[i]*grid.uy[i];
+                if constexpr (std::is_same_v<SolverType,Solver3D>) value+=grid.uz[i]*grid.uz[i];
+                if (!std::isfinite(value)) throw std::runtime_error("Non-finite single-phase velocity");
+                speed2=std::max(speed2,value);
+            }
+            const double mach=std::sqrt(3*speed2);
+            summary.maximum_mach=std::max(summary.maximum_mach,mach);
+            need(mach<=c.max_mach,"Computed Mach exceeds maxMach; reduce deltaT/velocity");
             const auto& d=solver.boundary_diagnostics();
             boundary_exchange+=d.mass_exchange;
             wall_exchange+=d.wall_mass_exchange;
+            summary.drag=d.obstacle_force[0]/force_scale;
+            summary.lift=d.obstacle_force[1]/force_scale;
+            drag_min=std::min(drag_min,summary.drag); drag_max=std::max(drag_max,summary.drag);
+            lift_min=std::min(lift_min,summary.lift); lift_max=std::max(lift_max,summary.lift);
         }
-        if (step % c.write_interval == 0 || step == c.steps) {
+        compute_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-tick).count();
+        summary.steps=step;
+        if (step % monitor_interval == 0 || step == c.steps) {
             auto current=snapshot();
             const auto report=field_report(current,&previous);
             const double mach=report.speed*std::sqrt(3.0);
+            summary.velocity_change=report.change;
+            summary.density_change=report.density_change;
+            summary.force_range=std::max(drag_max-drag_min,lift_max-lift_min);
+            summary.converged=step-previous_step==monitor_interval &&
+                convergence.observe(previous_step,report.change,report.density_change,summary.force_range,check_force);
             std::cout << "step=" << step << " time=" << step*current.units.time_step
                       << " mass=" << std::setprecision(12) << report.mass
                       << " rho=[" << report.rho_min << ',' << report.rho_max << ']'
-                      << " Ma=" << mach << " dU=" << report.change
+                      << " Ma=" << mach << " dU=" << report.change << " dRho=" << report.density_change
+                      << " forceRange=" << summary.force_range << " steadyWindows=" << convergence.passes()
                       << " divRMS=" << report.divergence_rms << " energyLU=" << report.energy
                       << " flux(in,out)=" << report.inlet << ',' << report.outlet;
             if constexpr (single) {
@@ -959,43 +1028,55 @@ void run_case(SolverType &solver, const FoamCase &c, const std::filesystem::path
                     std::cout << " WARNING: density variation exceeds densityWarning";
             }
             std::cout << '\n';
-            tick=std::chrono::steady_clock::now();
-            writer.write(step,current);
-            io_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-tick).count();
             previous=std::move(current); last=report;
+            previous_step=step;
+            drag_min=drag_max=summary.drag; lift_min=lift_max=summary.lift;
             boundary_exchange=wall_exchange=0;
         }
+        if (step%c.write_interval==0 || step==c.steps || summary.converged) {
+            tick=std::chrono::steady_clock::now();
+            writer.write(step,previous_step==step?previous:snapshot());
+            io_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-tick).count();
+        }
+        if (summary.converged) break;
     }
     std::cout << "computeSeconds=" << compute_seconds << " outputSeconds=" << io_seconds
-              << " fluidMLUPS=" << (compute_seconds>0?fluid*static_cast<double>(c.steps)/compute_seconds/1e6:0) << '\n';
-    std::cout << "Completed " << c.steps << " steps. OpenFOAM: " << (output / "lbm.foam") << '\n';
+              << " fluidMLUPS=" << (compute_seconds>0?fluid*static_cast<double>(summary.steps)/compute_seconds/1e6:0) << '\n';
+    std::cout << "termination=" << (summary.converged?"converged":"endTime") << " maxMach=" << summary.maximum_mach << '\n';
+    std::cout << "Completed " << summary.steps << " steps. OpenFOAM: " << (output / "lbm.foam") << '\n';
+    return summary;
 }
 } // namespace
 
 void solve_foam_case(const std::filesystem::path &path) {
     const auto c = read_foam_case(path);
-    const auto &s = c.initial;
     auto input = std::filesystem::canonical(path);
     while (input.has_relative_path() && input.filename().empty())
         input = input.parent_path();
     const auto output = openfoam_result_path(input.filename().string().c_str());
     need(std::filesystem::weakly_canonical(path) != std::filesystem::weakly_canonical(output),
          "Input case must not be its output directory");
+    run_foam_case(c,input.filename().string().c_str());
+}
+
+FoamRunSummary run_foam_case(const FoamCase& c, const char* output_case) {
+    const auto& s=c.initial;
+    const auto output=openfoam_result_path(output_case);
     if (s.two_phase) {
         if (s.two_dimensional) {
             TwoPhaseSolver solver(s.nx, s.ny, c.two);
-            run_case(solver, c, output);
+            return run_case(solver, c, output);
         } else {
             TwoPhaseSolver3D solver(s.nx, s.ny, s.nz, c.two3d);
-            run_case(solver, c, output);
+            return run_case(solver, c, output);
         }
     } else {
         if (s.two_dimensional) {
             Solver solver(s.nx, s.ny, c.single);
-            run_case(solver, c, output);
+            return run_case(solver, c, output);
         } else {
             Solver3D solver(s.nx, s.ny, s.nz, c.single3d);
-            run_case(solver, c, output);
+            return run_case(solver, c, output);
         }
     }
 }
@@ -1254,7 +1335,7 @@ void refine_foam_case(const std::filesystem::path& source,
     int nx=block.label(), ny=block.label(), nz=block.label();
     block.expect(")"); block.expect("simpleGrading"); const auto grading=block.vec(); block.expect(")");
     need(block.i==block.t.size() && grading==Vec{1,1,1},"Refinement requires one uniform hex block");
-    const auto config=dictionary(source/"system"/"lbmDict");
+    auto config=dictionary(source/"system"/"lbmDict");
     need(word(config,"model","singlePhase")=="singlePhase","SI refinement currently requires singlePhase");
     const bool two_d=word(config,"lattice","D2Q9")=="D2Q9";
     need(nx>0 && ny>0 && nz>0 && (!two_d || nz==1),"Invalid refinement cell counts");
@@ -1272,6 +1353,18 @@ void refine_foam_case(const std::filesystem::path& source,
     const int interval=integer(number(control,"writeInterval",10)*factor*factor,"refined writeInterval",true);
     std::ostringstream dt_text; dt_text << std::setprecision(17) << dt;
     control["deltaT"]={dt_text.str()}; control["writeInterval"]={std::to_string(interval)};
+    if (config.count("convergence")) {
+        auto settings=Cursor(config.at("convergence")).dict();
+        if (settings.count("interval")) settings["interval"]={std::to_string(integer(
+            number(settings,"interval",0)*factor*factor,"refined convergence interval"))};
+        Tokens tokens;
+        for (const auto& entry:settings) {
+            tokens.push_back(entry.first);
+            tokens.insert(tokens.end(),entry.second.begin(),entry.second.end());
+            tokens.push_back(";");
+        }
+        config["convergence"]=std::move(tokens);
+    }
     // 初始均匀场可保持物理值不变；非均匀列表必须显式重采样，不能直接复制。
     std::vector<std::filesystem::path> fields;
     for (const auto& entry:std::filesystem::directory_iterator(source/"0")) {
@@ -1289,21 +1382,23 @@ void refine_foam_case(const std::filesystem::path& source,
         out << "FoamFile\n{version 2.0; format ascii; class dictionary; object " << name << ";}\n";
         for (const auto& entry:dict) {
             out << entry.first << ' ';
+            if (entry.first=="convergence") out << "{ ";
             for (const auto& token:entry.second) out << token << ' ';
-            out << ";\n";
+            out << (entry.first=="convergence"?"}\n":";\n");
         }
     };
     std::filesystem::create_directories(target/"0");
     std::filesystem::create_directories(target/"system");
     std::filesystem::create_directories(target/"constant");
     for (const auto& file:fields) std::filesystem::copy_file(file,target/"0"/file.filename());
-    for (const auto* file:{"lbmDict","setFieldsDict"})
+    for (const auto* file:{"setFieldsDict"})
         if (std::filesystem::exists(source/"system"/file))
             std::filesystem::copy_file(source/"system"/file,target/"system"/file);
     for (const auto* file:{"lbmProperties","lbmGeometry"})
         if (std::filesystem::exists(source/"constant"/file))
             std::filesystem::copy_file(source/"constant"/file,target/"constant"/file);
     write_dictionary("blockMeshDict",mesh); write_dictionary("controlDict",control);
+    write_dictionary("lbmDict",config);
     std::cout << "Refined SI template: " << target << "; dx/" << factor << ", deltaT/"
               << factor*factor << "; physical fields/endTime preserved\n";
 }

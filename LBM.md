@@ -424,8 +424,8 @@ q >= 0.5: fopp(x,t+1) = [fout+(2q-1)*fopp-C]/(2q)
 
 ### 诊断、性能与验证
 
-通用求解器在输出采样步打印格子质量、密度极值、Ma、相邻输出时刻速度相对变化 dU、速度散度 RMS、格子动能和入口/出口近似质量流量。
-`maxMach` 在初始与输出步检查，超限终止；`densityWarning` 超限只打印告警。仍按 endTime 计算，不依据 dU 自动提前结束。
+通用求解器在监测步打印格子质量、密度极值、Ma、相邻监测时刻速度相对变化 dU、密度相对变化 dRho、速度散度 RMS、格子动能和入口/出口近似质量流量。
+通用单相 `maxMach` 在初始与每个内部步检查，超限终止；`densityWarning` 在监测步超限只打印告警。默认仍按 endTime 计算，只有显式启用 convergence 才可能提前结束。
 入口/出口通量是格子截面宏观矩近似，不包含开放边界存储变化，不能直接与单步质量变化等同。
 `massBalance` 则使用每步未知分布重构引入的精确质量增量以及 BFL 引入的壁面质量修正，核对完整的离散质量收支。
 `wallMass` 显式暴露 BFL 的非严格局部质量守恒，不能用很小的 massBalance 掩盖它。
@@ -437,3 +437,31 @@ computeSeconds/outputSeconds 分开计时；fluidMLUPS 只按流体单元更新�
 
 新增 `lbm_accuracy`（解析解和矩约束）、`lbm_reference`（Ghia/DFG 与三维圆管）、`lbm_precision_input`（SI、细化和输入输出一致性）测试。
 详细实测误差、网格阶数、参考来源及工程适用限制见 [ACCURACY.md](ACCURACY.md)。
+
+## 13. 稳态监测与一致条件网格研究
+
+`include/lbm/convergence.hpp` 定义联合阈值与连续窗口计数，`run_foam_case` 共用于文件求解和圆柱验证案例。
+`Solver`/`Solver3D` 构造、初始化、step/run 接口不变；逐步 Ma 护栏属于通用运行器，不会静默改变专用老案例的控制逻辑。
+不启用 convergence 时仍保留总时间结束条件，且输出步与最后一步均保存。
+
+监测间隔可独立于输出间隔设置；间隔为 0 时回退至输出间隔。速度和密度指标为：
+
+```text
+dU   = sqrt(sum_fluid |u(t)-u(t_previous_monitor)|² / max(sum_fluid |u(t)|²,1e-30))
+dRho = sqrt(sum_fluid (rho(t)-rho(t_previous_monitor))² / max(sum_fluid rho(t)²,1e-30))
+forceRange = max(max_window Cd-min_window Cd, max_window Cl-min_window Cl)
+```
+
+每个单相内部步记录力的上下界，下一窗口也包含上次末值，避免只比较两个端点漏掉窗口内的力振荡。
+至少连续两个、默认五个完整窗口通过全部阈值，且各窗口起点不早于 minTime 和入口 ramp 结束时刻，才标记 converged。
+窗口失败或出现非有限指标时连续计数清零；最后不足完整间隔的采样只报告数据，不累积通过次数。
+无可用非零参考速度/长度或未标记障碍时不使用力系数判据；不能以此认证不存在参考面积的障碍阻力。
+
+稳态停止会额外保存真实终止步，即使该步不在写盘间隔上；未达到阈值则输出 termination=endTime。
+maxMach 在每步直接检查宏观速度数组，避免复制快照；computeSeconds 包含该护栏和逐步力采样，不包含完整采样诊断与写盘。
+密度告警仍不作为硬终止；此配置只用于单相稳态问题，不适用于周期涡脱落或两相界面演化。
+
+`lbm_cylinder_validation` 在三个网格上保持直径、密度、运动黏度、入口速度、Re、壁面模型和压力出口完全一致，
+同步使用 dt 正比 dx²；另只加长出口距离作敏感性对照。各档采用相同物理监测时长和阈值，而非把“相同步数”误认为相同物理时长。
+三档为非等比细化，只在阻力差同号且可解正阶数时求解实际格距比对应的观察阶数；不盲用 log2，也不保证已进入渐近区。
+该研究针对本项目 Re=18 的通道工况，不宣称等价于 DFG Re=20 的自然出口基准。
