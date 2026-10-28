@@ -49,6 +49,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(lbm
     src/foam_case.cpp
+    src/pressure_probes.cpp
     src/openfoam.cpp
     src/collision.cpp
     src/collision3d.cpp
@@ -174,6 +175,10 @@ foreach(tool lbm_blockMesh lbm_setFields lbm_solver lbm_refineCase)
     configure_lbm_target(${tool})
 endforeach()
 if(BUILD_TESTING)
+    add_executable(lbm_pressure_probe_tests tests/pressure_probes.cpp)
+    target_link_libraries(lbm_pressure_probe_tests PRIVATE lbm)
+    configure_lbm_target(lbm_pressure_probe_tests)
+    add_test(NAME lbm_pressure_probes COMMAND $<TARGET_FILE:lbm_pressure_probe_tests>)
     add_executable(lbm_convergence_tests tests/convergence.cpp)
     target_link_libraries(lbm_convergence_tests PRIVATE lbm)
     configure_lbm_target(lbm_convergence_tests)

@@ -2,6 +2,7 @@
 
 #include "lbm/openfoam.hpp"
 #include "lbm/convergence.hpp"
+#include "lbm/pressure_probes.hpp"
 #include "lbm/solver.hpp"
 #include "lbm/solver3d.hpp"
 #include "lbm/two_phase_solver.hpp"
@@ -26,6 +27,7 @@ struct FoamCase {
     bool parabolic_inlet = false;
     double inlet_ramp_steps = 0.0;
     ConvergenceConfig convergence{};
+    std::vector<std::array<double, 3>> pressure_probes;
 };
 
 struct FoamRunSummary {
@@ -33,6 +35,7 @@ struct FoamRunSummary {
     bool converged = false;
     double velocity_change = 0, density_change = 0, force_range = 0;
     double drag = 0, lift = 0, maximum_mach = 0;
+    std::vector<double> pressures; // 初始或最后实际计算步的探针压力，SI 为 Pa。
 };
 
 FoamCase read_foam_case(const std::filesystem::path &path);

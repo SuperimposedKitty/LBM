@@ -497,7 +497,8 @@ void configure(FoamCase &c, const std::filesystem::path &path) {
     known(d, {"model", "lattice", "collision", "tau", "tauA", "tauB", "interactionStrength",
               "contactAngle", "wallAdhesion", "recoloring", "bodyForce", "poreDiameter",
               "darcyDrag", "forchheimerDrag", "acceleration", "openBoundary", "wallBoundary",
-              "inletProfile", "maxMach", "densityWarning", "referenceLength", "inletRampTime", "convergence"});
+              "inletProfile", "maxMach", "densityWarning", "referenceLength", "inletRampTime", "convergence",
+              "pressureProbes"});
     const auto model = word(d, "model", "singlePhase"), lattice = word(d, "lattice", "D2Q9"),
                collision = word(d, "collision", "MRT");
     need(model == "singlePhase" || model == "twoPhase", "Unknown LBM model");
@@ -505,6 +506,13 @@ void configure(FoamCase &c, const std::filesystem::path &path) {
     need(collision == "MRT" || collision == "BGK", "Unknown collision model");
     c.initial.two_phase = model == "twoPhase";
     c.initial.two_dimensional = lattice == "D2Q9";
+    if (d.count("pressureProbes")) {
+        Cursor probes(d.at("pressureProbes"));
+        probes.expect("(");
+        while (!probes.take(")")) c.pressure_probes.push_back(probes.vec());
+        need(probes.i==probes.t.size(),"Extra pressureProbes tokens");
+        need(!c.initial.two_phase || c.pressure_probes.empty(),"pressureProbes currently require singlePhase");
+    }
     c.single.collision_model = c.single3d.collision_model = c.two.collision_model =
         c.two3d.collision_model = collision == "MRT" ? CollisionModel::MRT : CollisionModel::BGK;
     c.single3d.lattice_model = c.two3d.lattice_model =
@@ -864,6 +872,7 @@ FoamCase read_foam_case(const std::filesystem::path &path) {
     c.two.inlet_velocity = c.two3d.inlet_velocity = c.inlet_velocity;
     c.two.rho_high = c.two3d.rho_high = inlet_rho * inlet_alpha;
     c.two.rho_low = c.two3d.rho_low = open ? inlet_rho * (1 - inlet_alpha) : 0.02;
+    sample_pressure_probes(c.initial,c.pressure_probes);
     return c;
 }
 
@@ -930,6 +939,7 @@ FoamRunSummary run_case(SolverType &solver, const FoamCase &c, const std::filesy
     constexpr bool single=std::is_same_v<SolverType,Solver> || std::is_same_v<SolverType,Solver3D>;
     need(single || !c.convergence.enabled,"Steady-state termination currently requires singlePhase");
     auto previous=snapshot();
+    const auto initial_pressures=sample_pressure_probes(previous,c.pressure_probes);
     auto last=field_report(previous);
     const double reference_speed=c.inlet_velocity>0?c.inlet_velocity:last.speed;
     const double reference_rho=single?(previous.two_dimensional?c.single.initial_rho:c.single3d.initial_rho):1;
@@ -952,6 +962,18 @@ FoamRunSummary run_case(SolverType &solver, const FoamCase &c, const std::filesy
         static_cast<int>(std::min(static_cast<double>(c.steps),std::ceil(c.inlet_ramp_steps))));
     ConvergenceMonitor convergence(settings);
     FoamRunSummary summary;
+    summary.pressures=initial_pressures;
+    auto print_probes=[&](int step, const FoamSnapshot& state) {
+        summary.pressures=sample_pressure_probes(state,c.pressure_probes);
+        if (summary.pressures.empty()) return;
+        std::cout << "PROBES step=" << step << " time=" << step*state.units.time_step
+                  << " pressureUnit=" << (state.units.si?"Pa":"lattice") << std::setprecision(12);
+        for (std::size_t i=0; i<summary.pressures.size(); ++i)
+            std::cout << " p[" << i << "]=" << summary.pressures[i];
+        if (summary.pressures.size()==2)
+            std::cout << " deltaP01=" << summary.pressures[0]-summary.pressures[1];
+        std::cout << '\n';
+    };
     summary.maximum_mach=last.speed*std::sqrt(3.0);
     int previous_step=0;
     double drag_min=0, drag_max=0, lift_min=0, lift_max=0;
@@ -959,6 +981,7 @@ FoamRunSummary run_case(SolverType &solver, const FoamCase &c, const std::filesy
               << "; forceRange is the full-window Cd/Cl range\n";
     if constexpr (single)
         need(last.speed*std::sqrt(3.0)<=c.max_mach,"Initial Mach exceeds maxMach");
+    print_probes(0,previous);
     auto io_start=std::chrono::steady_clock::now();
     OpenFoamWriter writer(output, previous);
     writer.write(0, previous);
@@ -1028,6 +1051,7 @@ FoamRunSummary run_case(SolverType &solver, const FoamCase &c, const std::filesy
                     std::cout << " WARNING: density variation exceeds densityWarning";
             }
             std::cout << '\n';
+            print_probes(step,current);
             previous=std::move(current); last=report;
             previous_step=step;
             drag_min=drag_max=summary.drag; lift_min=lift_max=summary.lift;

@@ -38,6 +38,8 @@ lbm::FoamRunSummary simulate(int diameter, int length, double end_time) {
     c.inlet_velocity=0.03*dt/dx;
     c.inlet_ramp_steps=0.15/dt;
     c.reference_length=diameter;
+    // 固定物理流体点，不是圆柱表面压力；各档网格都在同一位置插值。
+    c.pressure_probes={{{0.004,0.006,0.0005}},{{0.012,0.006,0.0005}}};
     c.max_mach=0.1;
     c.steps=static_cast<int>(std::lround(end_time/dt));
     c.write_interval=static_cast<int>(std::lround(0.4/dt));
@@ -53,45 +55,60 @@ lbm::FoamRunSummary simulate(int diameter, int length, double end_time) {
     std::cout << "VALIDATION D=" << diameter << " L/D=" << length << " Re=18 tau=" << c.single.tau
               << " time=" << result.steps*dt << " converged=" << result.converged
               << " Cd=" << result.drag << " Cl=" << result.lift
+              << " deltaP=" << result.pressures.at(0)-result.pressures.at(1)
+              << " deltaCp=" << (result.pressures.at(0)-result.pressures.at(1))/(0.5*1000*0.03*0.03)
               << " dU=" << result.velocity_change << " dRho=" << result.density_change
               << " forceRange=" << result.force_range << " maxMach=" << result.maximum_mach << '\n';
     return result;
 }
 
-void study(double end_time) {
-    const auto coarse=simulate(8,6,end_time);
-    const auto medium=simulate(12,6,end_time);
-    const auto fine=simulate(16,6,end_time);
-    const auto longer=simulate(12,9,end_time);
+void study(double end_time, bool finer) {
+    const int dc=finer?12:8, dm=finer?16:12, df=finer?24:16;
+    const auto coarse=simulate(dc,6,end_time);
+    const auto medium=simulate(dm,6,end_time);
+    const auto fine=simulate(df,6,end_time);
+    const auto longer=simulate(dm,9,end_time);
     if (!coarse.converged || !medium.converged || !fine.converged || !longer.converged)
         throw std::runtime_error("Study not steady: increase end-time; do not report transient values as converged.");
-    const double a=coarse.drag-medium.drag, b=medium.drag-fine.drag;
-    std::cout << "STUDY Cd=" << coarse.drag << ',' << medium.drag << ',' << fine.drag
-              << " mediumFineRelative=" << std::abs(b/fine.drag)
-              << " outletLengthRelative=" << std::abs(longer.drag/medium.drag-1);
-    // 非等比加密须使用各自格距比；无正的单调阶数时不伪造 Richardson 外推。
-    auto ratio=[](double p) {return (std::pow(2.0,p)-std::pow(4.0/3,p))/(std::pow(4.0/3,p)-1);};
-    if (a*b>0 && a/b>ratio(0.1) && a/b<ratio(8)) {
-        double lo=0.1, hi=8;
-        for (int i=0; i<60; ++i) {
-            const double p=(lo+hi)/2;
-            if (ratio(p)<a/b) lo=p; else hi=p;
-        }
-        std::cout << " observedOrder=" << (lo+hi)/2;
-    } else std::cout << " observedOrder=unresolved";
-    std::cout << " (same velocity/pressure BC; not DFG do-nothing)\n";
+    auto compare=[&](const char* quantity,double c,double m,double f,double l) {
+        const double a=c-m, b=m-f;
+        std::cout << "STUDY D=" << dc << ',' << dm << ',' << df << ' ' << quantity << '=' << c << ',' << m << ',' << f;
+        if (std::abs(f)>1e-14 && std::abs(m)>1e-14)
+            std::cout << " mediumFineRelative=" << std::abs(b/f) << " outletLengthRelative=" << std::abs(l/m-1);
+        else std::cout << " relativeDifference=unresolved";
+        // 非等比加密须使用各自格距比；无正的单调阶数时不伪造 Richardson 外推。
+        auto ratio=[&](double p) {
+            const double r1=static_cast<double>(df)/dc, r2=static_cast<double>(df)/dm;
+            return (std::pow(r1,p)-std::pow(r2,p))/(std::pow(r2,p)-1);
+        };
+        if (a*b>0 && a/b>ratio(0.1) && a/b<ratio(8)) {
+            double lo=0.1, hi=8;
+            for (int i=0; i<60; ++i) {
+                const double p=(lo+hi)/2;
+                if (ratio(p)<a/b) lo=p; else hi=p;
+            }
+            std::cout << " observedOrder=" << (lo+hi)/2;
+        } else std::cout << " observedOrder=unresolved";
+        std::cout << " (same velocity/pressure BC; not DFG do-nothing)\n";
+    };
+    compare("Cd",coarse.drag,medium.drag,fine.drag,longer.drag);
+    auto dp=[](const lbm::FoamRunSummary& r) {return r.pressures.at(0)-r.pressures.at(1);};
+    compare("deltaP_Pa",dp(coarse),dp(medium),dp(fine),dp(longer));
 }
 } // namespace
 
 int main(int argc,char** argv) {
     try {
         std::cout << std::unitbuf << std::setprecision(12);
-        int diameter=16, length=6; double end_time=12; bool all=false, geometry_option=false;
+        int diameter=16, length=6; double end_time=12; bool all=false, finer=false, geometry_option=false;
         for (int i=1; i<argc; ++i) {
             const std::string arg=argv[i];
-            if (arg=="--study") {all=true; continue;}
+            if (arg=="--study" || arg=="--fine-study") {
+                if (all) throw std::invalid_argument("Choose only one study mode");
+                all=true; finer=arg=="--fine-study"; continue;
+            }
             if ((arg!="--diameter" && arg!="--length" && arg!="--end-time") || i+1>=argc)
-                throw std::invalid_argument("Usage: lbm_cylinder_validation [--study] [--diameter N] [--length N] [--end-time seconds]");
+                throw std::invalid_argument("Usage: lbm_cylinder_validation [--study | --fine-study] [--diameter N] [--length N] [--end-time seconds]");
             const std::string value=argv[++i]; std::size_t used=0;
             if (arg=="--end-time") end_time=std::stod(value,&used);
             else {
@@ -100,8 +117,10 @@ int main(int argc,char** argv) {
             }
             if (used!=value.size()) throw std::invalid_argument("Invalid numerical argument");
         }
-        if (all && geometry_option) throw std::invalid_argument("--study uses fixed diameter/length levels; only --end-time may be combined.");
-        if (all) study(end_time); else simulate(diameter,length,end_time);
+        if (all && geometry_option) throw std::invalid_argument("Study modes use fixed diameter/length levels; only --end-time may be combined.");
+        if (all) study(end_time,finer);
+        else if (!simulate(diameter,length,end_time).converged)
+            throw std::runtime_error("Validation not steady: increase end-time");
         return 0;
     } catch (const std::exception& e) {std::cerr << e.what() << '\n'; return 1;}
 }

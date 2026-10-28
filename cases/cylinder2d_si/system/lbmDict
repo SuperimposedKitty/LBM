@@ -15,3 +15,5 @@ acceleration (0 0 0);
 maxMach 0.1;
 densityWarning 0.01;
 inletRampTime 0.15;
+// 圆柱前后流体点压力，坐标单位为米；不是固体表面的压力探针。
+pressureProbes ((0.004 0.006 0.0005) (0.012 0.006 0.0005));

@@ -177,15 +177,41 @@ convergence
 ```powershell
 .\bin\lbm_cylinder_validation.exe
 .\bin\lbm_cylinder_validation.exe --study
+.\bin\lbm_cylinder_validation.exe --fine-study
 .\bin\lbm_cylinder_validation.exe --diameter 16 --length 6 --end-time 12
 ```
 
 默认运行直径 16 格的单个案例；`--study` 顺序计算直径 8/12/16 格及 12 格、加长至 9D 的出口对照。
+`--fine-study` 则使用 12/16/24 格，以及 16 格、总长 9D 的出口对照。两种研究模式互斥，不能同时指定 diameter/length。
 三档均为 Re=18、tau=0.52、相同速度入口/压力出口和 BFL，按扩散尺度减小 dt；它们不是 DFG 2D-1 的完整复现。
 length 表示通道总长与直径之比；同一网格、长度重跑覆盖同名结果。
 结果只写 `result/openfoam/cylinder_validation_d<直径格数>_l<长度比>/lbm.foam`，含初始场。
-控制台 STUDY 行给出网格差与出口长度敏感性；任一工况未收敛则研究返回错误，不报告有效收敛阶。
+控制台 STUDY 行分别给出阻力系数和固定流体点压降的网格差与出口长度敏感性；任一工况未收敛则研究返回错误，不报告有效收敛阶。
+单次验证未收敛也返回非零退出码；通用 `lbm_solver` 的默认按总时间计算行为不变。
 此验证程序直接构造宏观初场调用通用运行器，原有 blockMesh/setFields/solver 文件流程继续保留。
+
+### 固定位置压力探针
+
+单相 `system/lbmDict` 可设置有序列表（省略或空列表表示禁用）：
+
+```text
+pressureProbes
+(
+    (0.004 0.006 0.0005)
+    (0.012 0.006 0.0005)
+);
+```
+
+坐标与输入网格一致，SI 为米；二维 z 必须是网格中心平面。`cylinder2d_si` 已包含上述两点。
+在初始、监测步及最终步打印 `PROBES` 行，`p[0]`/`p[1]` 按列表顺序编号；恰有两点时打印 `deltaP01=p[0]-p[1]`。
+压力与导出 `p` 使用同一状态方程，SI 为 Pa（含 referencePressure），非 SI 为格子压力。
+探针不受写盘间隔影响，不新增 CSV、SVG 或探针文件；C++ 调用者可读取 `FoamRunSummary::pressures` 中的最终值。
+ParaView 仍可用完整 `p` 场查看压力分布。
+
+二维采用双线性、三维采用三线性插值；只允许流体单元中心之间的插值。
+越界、非有限坐标、固体内或正权重插值节点包含固体都会报错，不偷偷移动探针或跨固体平均。
+它不是壁面压力外推，不能直接代替 DFG 圆柱前后表面压差；两相压力含相互作用项，本轮暂不开放两相探针。
+`lbm_refineCase` 保留这些物理坐标，不随格点数缩放。探针当前用于诊断，不新增自动停机判据。
 
 ### 输入范围与边界
 

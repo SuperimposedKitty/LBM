@@ -54,10 +54,17 @@ int main() {
         lbm::refine_foam_case(coarse,fine,2);
         lbm::block_mesh_case(coarse); lbm::block_mesh_case(fine);
         auto a=lbm::read_foam_case(coarse), b=lbm::read_foam_case(fine);
+        check(a.pressure_probes.size()==2 && a.pressure_probes==b.pressure_probes,
+              "Refinement moved physical pressure probes");
         check(!a.convergence.enabled && b.convergence.interval==4*a.convergence.interval &&
               b.convergence.minimum_steps==4*a.convergence.minimum_steps,
               "Refinement changed physical monitoring interval/minTime");
         const auto coarse_dict=read(coarse/"system"/"lbmDict");
+        for (const auto* invalid:{"(-0.01 0.006 0.0005)","(0.008 0.006 0.0005)",
+                                 "(0.004 0.006)","(nan 0.006 0.0005)"}) {
+            write(coarse/"system"/"lbmDict",replace(coarse_dict,"(0.004 0.006 0.0005)",invalid));
+            rejects([&]{lbm::read_foam_case(coarse);});
+        }
         write(coarse/"system"/"lbmDict",replace(coarse_dict,"enabled false;",
               "enabled true; velocityTolerance 0;"));
         rejects([&]{lbm::read_foam_case(coarse);});
